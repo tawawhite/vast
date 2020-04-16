@@ -16,7 +16,7 @@ vast [options] [command] [options] [command] ...
 ```
 
 Commands are recursive and the top-level root command is the `vast` executable
-itself. Usage follows typical UNIX applications: 
+itself. Usage follows typical UNIX applications:
 
 - *standard input* feeds data to commands
 - *standard output* represents the result of a command
