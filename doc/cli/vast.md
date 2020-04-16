@@ -22,8 +22,13 @@ itself. Usage follows typical UNIX applications:
 - *standard output* represents the result of a command
 - *standard error* includes logging output
 
-The `help` sub-command always prints the usage instructions for a given
-command, e.g., `vast help` lists all available top-level sub-commands.
+The `help` subcommand always prints the usage instructions for a given
+command, e.g., `vast help` lists all available top-level subcommands.
+
+More information about subcommands is available using `help` and `documentation`
+subcommands. E.g., `vast import suricata help` prints a helptext for `vast
+import suricata`, and `vast start documentation` prints a longer documentation
+for `vast start`.
 
 ## Configuration
 
