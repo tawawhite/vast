@@ -2,7 +2,7 @@ The `import` command ingests data. An optional filter expression allows for
 restricing the input to matching events. The format of the imported data must
 be explicitly specified:
 
-```
+```sh
 vast import [options] <format> [options] [expr]
 ```
 
@@ -10,7 +10,7 @@ The `import` command is the dual to the `export` command.
 
 This is easiest explained on an example:
 
-```
+```sh
 vast import suricata < path/to/eve.json
 ```
 
@@ -19,11 +19,11 @@ for later export) all Suricata events from the Eve JSON file passed via standard
 input.
 
 An optional filter expression allows for importing the relevant subset of
-information only. To filter Suricata events by their source address field, this
-command can be used:
+information only. For example, a user might want to import Suricata Eve JSON,
+but skip over all events of type `suricata.stats`.
 
-```
-vast import suricata 'src_ip == 147.32.84.165' < path/to/eve.json
+```sh
+vast import suricata '#type != "suricata.stats"' < path/to/eve.json
 ```
 
 For more information on the optional filter expression, see the [query language

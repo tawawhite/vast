@@ -33,6 +33,5 @@ produces compressed batches of `*.tar.gz` regularly. Ingesting a compressed
 batch involves unpacking and concatenating the input before sending it to VAST:
 
 ```
-zcat *.gz | vast import zeek
+gunzip -c *.gz | vast import zeek
 ```
-
