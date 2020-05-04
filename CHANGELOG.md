@@ -11,6 +11,10 @@ Every entry has a category for which we use the following visual abbreviations:
 
 ## Unreleased
 
+- 🎁 The `vast get` subcommand has been added. It can be used to retrieve
+  events by their ids from the database.
+  [#XXX]()
+
 - 🎁 The meta index now uses Bloom filters for equality queries involving IP
   addresses. This especially accellerates queries where the user wants to know
   whether a certain IP address exists in the entire database.
