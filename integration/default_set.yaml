@@ -78,6 +78,7 @@ tests:
       - command: -N export ascii '#type == "zeek.conn" && resp_h == 192.168.1.104'
       - command: '-N export ascii "#type != \"zeek.conn\" && #type != \"vast.metrics\""'
       - command: -N export ascii '#type != "foobar" && resp_h == 192.168.1.104'
+      - command: -N get --format=json 1 42 7777 9999999999 122
   Node Zeek multiple imports:
     tags: [node, import-export, zeek]
     steps:
