@@ -1,0 +1,21 @@
+include "meta_index.fbs";
+include "partition.fbs";
+include "version.fbs";
+
+namespace vast.fbs;
+
+/// The persistent state of the meta index.
+table Index {
+  /// The version of the index state.
+  version: Version;
+
+  /// Synopsis structures for the contained partitions.
+  meta_index: MetaIndex;
+
+  /// The contained partitions.
+  partitions: [Partition];
+}
+
+root_type Index;
+
+file_identifier "VAST";

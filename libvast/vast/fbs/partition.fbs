@@ -1,0 +1,34 @@
+namespace vast.fbs;
+
+table ValueIndex {
+  /// The full-qualified field name, e.g., "zeek.conn.id.orig_h".
+  qualified_field_name: string;
+
+  /// The type of the index.
+  type: string; // TODO: use the Type flatbuffer once available.
+
+  /// The serialized `vast::value_index`.
+  data: [ubyte];
+}
+
+/// The persistent state of the meta index.
+table Partition {
+  /// The UUID of this partition.
+  uuid: string (key);
+
+  /// The first ID in the partition.
+  offset: uint64;
+
+  /// The number of contained events.
+  events: uint64;
+
+  /// The available layouts in this partition.
+  layouts: [ubyte]; // TODO: use the layout type once availble
+
+  /// The contained value indexes.
+  indexes: [ValueIndex];
+}
+
+root_type Partition;
+
+file_identifier "VAST";
