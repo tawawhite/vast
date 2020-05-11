@@ -11,5 +11,9 @@ The node is the core piece of VAST that is continuously running in the
 background, and can be interacted with using the `vast import` and `vast export`
 commands (among others). To gracefully stop the node, `vast stop` can be used.
 
+VAST can also be used without a central node running by passing the `--node` /
+`-N` flag to commands interacting with the node. This is useful mostly for quick
+experiments.
+
 Further information on getting started with using VAST can be found on
 [docs.tenzir.com](https://docs.tenzir.com/vast/quick-start/introduction).
