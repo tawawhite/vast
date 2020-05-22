@@ -29,6 +29,20 @@
 
 namespace vast::system {
 
+namespace v2 {
+
+struct indexer_state {
+  value_index_ptr idx;
+
+  std::string name;
+};
+
+/// Indexes a table slice column with a single value index.
+caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
+                      caf::settings index_opts);
+
+} // namespace v2
+
 struct indexer_state {
   // -- constructors, destructors, and assignment operators --------------------
 

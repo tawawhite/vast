@@ -16,6 +16,7 @@
 #include "vast/detail/flat_lru_cache.hpp"
 #include "vast/detail/stable_map.hpp"
 #include "vast/expression.hpp"
+#include "vast/filesystem.hpp"
 #include "vast/fwd.hpp"
 #include "vast/meta_index.hpp"
 #include "vast/system/accountant.hpp"
@@ -33,6 +34,55 @@
 #include <vector>
 
 namespace vast::system {
+
+namespace v2 {
+
+/// The state of the active partition.
+struct active_partition_state {
+  caf::actor actor; ///< The partition actor.
+
+  /// The slot ID that identifies the partition in the stream.
+  caf::stream_slot stream_slot;
+
+  /// The remaining free capacity of the partition.
+  uint64_t capacity;
+
+  /// The UUID of the partition.
+  uuid id;
+};
+
+/// The state of the index actor.
+struct index_state {
+  using index_stream_stage_ptr
+    = caf::stream_stage_ptr<table_slice_ptr,
+                            caf::broadcast_downstream_manager<table_slice_ptr>>;
+
+  /// The streaming stage.
+  index_stream_stage_ptr stage;
+
+  /// The single active (read/write) partition.
+  active_partition_state active_partition = {};
+
+  /// The set of passive (read-only) partitions.
+  std::unordered_map<uuid, caf::actor> passive_partitions;
+
+  /// The maximum number of events that a partition can hold.
+  size_t partition_capacity;
+
+  /// The directory for persistent state.
+  path dir;
+
+  static inline const char* name = "index";
+};
+
+/// Indexes events in horizontal partitions.
+/// @param dir The directory of the index.
+/// @param partition_capacity The maximum number of events per partition.
+/// @pre `partition_capacity > 0
+caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
+                    size_t partition_capacity);
+
+} // namespace v2
 
 /// State of an INDEX actor.
 struct index_state {

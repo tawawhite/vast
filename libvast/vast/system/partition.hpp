@@ -29,6 +29,32 @@
 
 namespace vast::system {
 
+// TODO: remove this temporary namespace after we have wired all functionality
+// with the new actorized partition.
+namespace v2 {
+
+/// The state of the partition actor.
+struct partition_state {
+  using partition_stream_stage_ptr = caf::stream_stage_ptr<
+    table_slice_ptr, caf::broadcast_downstream_manager<table_slice_column>>;
+
+  /// The streaming stage.
+  partition_stream_stage_ptr stage;
+
+  /// Maps qualified fields to indexer actors.
+  detail::stable_map<qualified_record_field, caf::actor> indexers;
+
+  /// A readable name for this partition
+  std::string name;
+};
+
+/// Spawns a partition.
+/// @param self The partition actor.
+/// @param id The UUID of this partition.
+caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
+
+} // namespace v2
+
 struct index_state;
 class indexer_downstream_manager;
 

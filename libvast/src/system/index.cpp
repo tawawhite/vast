@@ -19,6 +19,7 @@
 #include "vast/concept/printable/vast/bitmap.hpp"
 #include "vast/concept/printable/vast/error.hpp"
 #include "vast/concept/printable/vast/expression.hpp"
+#include "vast/concept/printable/vast/table_slice.hpp"
 #include "vast/concept/printable/vast/uuid.hpp"
 #include "vast/defaults.hpp"
 #include "vast/detail/assert.hpp"
@@ -41,9 +42,11 @@
 #include "vast/system/index_common.hpp"
 #include "vast/system/partition.hpp"
 #include "vast/system/query_supervisor.hpp"
+#include "vast/system/shutdown.hpp"
 #include "vast/system/spawn_indexer.hpp"
 #include "vast/table_slice.hpp"
 
+#include <caf/attach_continuous_stream_stage.hpp>
 #include <caf/make_counted.hpp>
 #include <caf/stateful_actor.hpp>
 
@@ -54,6 +57,120 @@
 using namespace std::chrono;
 
 namespace vast::system {
+
+namespace v2 {
+
+caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
+                    size_t partition_capacity) {
+  VAST_VERBOSE(self, "initializes index in", dir);
+  VAST_VERBOSE(self, "caps partition size at", partition_capacity, "events");
+  // Creates a new active partition and updates index state.
+  auto create_active_partition = [=] {
+    auto id = uuid::random();
+    auto part = self->spawn(partition, id);
+    auto slot = self->state.stage->add_outbound_path(part);
+    self->state.active_partition.actor = part;
+    self->state.active_partition.stream_slot = slot;
+    self->state.active_partition.capacity = partition_capacity;
+    self->state.active_partition.capacity = 200; // FIXME: remove after testing
+    self->state.active_partition.id = id;
+    VAST_DEBUG(self, "created new partition", to_string(id));
+  };
+  auto decomission_active_partition = [=] {
+    auto& active = self->state.active_partition;
+    // Send buffered batches.
+    self->state.stage->out().fan_out_flush();
+    self->state.stage->out().force_emit_batches();
+    // Remove active partition from the stream.
+    self->state.stage->out().close(active.stream_slot);
+    // Persist active partition asynchronously.
+    auto part_dir = dir / to_string(active.id);
+    VAST_DEBUG(self, "persists active partition to", part_dir);
+    self->request(active.actor, caf::infinite, atom::persist_v, part_dir)
+      .then(
+        [=](atom::ok) {
+          VAST_DEBUG(self, "successfully persisted partition", active.id);
+        },
+        [=](const caf::error& err) {
+          VAST_ERROR(self, "failed to persist partition", active.id);
+          self->quit(err);
+        });
+  };
+  // Setup stream manager.
+  self->state.stage = caf::attach_continuous_stream_stage(
+    self,
+    [=](caf::unit_t&) {
+      VAST_DEBUG(self, "initializes new table slice stream");
+    },
+    [=](caf::unit_t&, caf::downstream<table_slice_ptr>& out,
+        table_slice_ptr x) {
+      auto& active = self->state.active_partition;
+      if (!active.actor) {
+        create_active_partition();
+      } else if (x->rows() > active.capacity) {
+        VAST_DEBUG(self, "exceeds active capacity by",
+                   (x->rows() - active.capacity));
+        self->state.passive_partitions[active.id] = active.actor;
+        decomission_active_partition();
+        create_active_partition();
+      }
+      VAST_DEBUG(self, "forwards table slice", to_string(*x));
+      out.push(x);
+      if (active.capacity == self->state.partition_capacity
+          && x->rows() > active.capacity) {
+        VAST_WARNING(self, "got table slice with", x->rows(),
+                     "rows that exceeds the default partition capacity",
+                     self->state.partition_capacity);
+        active.capacity = 0;
+      } else {
+        VAST_ASSERT(active.capacity >= x->rows());
+        active.capacity -= x->rows();
+        VAST_DEBUG(self, "reduces active partition capacity to",
+                   (std::to_string(active.capacity) + '/'
+                    + std::to_string(self->state.partition_capacity)));
+      }
+    },
+    [=](caf::unit_t&, const caf::error& err) {
+      if (err) {
+        VAST_ERROR(self, "aborted with error", self->system().render(err));
+        // We can shutdown now because we only get a single stream from the
+        // importer.
+        self->send_exit(self, err);
+      } else {
+        VAST_DEBUG(self, "finalized streaming");
+      }
+    });
+  self->set_exit_handler([=](const caf::exit_msg& msg) {
+    VAST_DEBUG(self, "received EXIT from", msg.source,
+               "with reason:", msg.reason);
+    // Flush buffered batches and end stream.
+    self->state.stage->out().fan_out_flush();
+    self->state.stage->out().force_emit_batches();
+    self->state.stage->out().close();
+    self->state.stage->stop();
+    // Bring down active partition.
+    if (self->state.active_partition.actor)
+      decomission_active_partition();
+    // Collect partitions for termination.
+    std::vector<caf::actor> partitions;
+    partitions.reserve(self->state.passive_partitions.size() + 1);
+    partitions.push_back(self->state.active_partition.actor);
+    for ([[maybe_unused]] auto& [_, part] : self->state.passive_partitions)
+      partitions.push_back(part);
+    // FIXME: this manual ref-count decrementing should not be necessary, but
+    // it currently doesn't work otherwise.
+    self->state.passive_partitions.clear();
+    // Terminate partition actors.
+    VAST_DEBUG(self, "brings down", partitions.size(), "partitions");
+    shutdown<policy::parallel>(self, std::move(partitions));
+  });
+  return {[=](caf::stream<table_slice_ptr> in) {
+    VAST_DEBUG(self, "got a new table slice stream");
+    return self->state.stage->add_inbound_path(in);
+  }};
+}
+
+} // namespace v2
 
 namespace {
 

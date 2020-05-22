@@ -11,31 +11,30 @@
  * contained in the LICENSE file.                                             *
  ******************************************************************************/
 
-#include "vast/system/spawn_index.hpp"
+#pragma once
 
-#include <caf/actor.hpp>
-#include <caf/expected.hpp>
-#include <caf/settings.hpp>
+#include "vast/concept/printable/core.hpp"
+#include "vast/concept/printable/numeric/integral.hpp"
+#include "vast/concept/printable/string/char.hpp"
+#include "vast/table_slice.hpp"
 
-#include "vast/defaults.hpp"
-#include "vast/system/index.hpp"
-#include "vast/system/node.hpp"
-#include "vast/system/spawn_arguments.hpp"
+namespace vast {
 
-namespace vast::system {
+/// Prints a table slice as ID interval.
+struct table_slice_printer : printer<table_slice_printer> {
+  using attribute = table_slice;
 
-maybe_actor spawn_index(node_actor* self, spawn_arguments& args) {
-  if (!args.empty())
-    return unexpected_arguments(args);
-  auto opt = [&](caf::string_view key, auto default_value) {
-    return get_or(args.inv.options, key, default_value);
-  };
-  namespace sd = vast::defaults::system;
-  auto result
-    = self->spawn(v2::index, args.dir / args.label,
-                  opt("system.max-partition-size", sd::max_partition_size));
-  self->state.index = result;
-  return result;
-}
+  template <class Iterator>
+  bool print(Iterator& out, const table_slice& x) const {
+    using namespace printers;
+    auto p = '[' << u64 << ',' << u64 << ')';
+    return p(out, x.offset(), x.offset() + x.rows());
+  }
+};
 
-} // namespace vast::system
+template <>
+struct printer_registry<table_slice> {
+  using type = table_slice_printer;
+};
+
+} // namespace vast

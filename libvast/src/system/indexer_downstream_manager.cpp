@@ -226,7 +226,7 @@ void indexer_downstream_manager::emit_batches_impl(bool force_underfull) {
         auto& layout = slice->layout();
         // Split the slice into co-owning columns.
         for (size_t i = 0; i < layout.fields.size(); ++i) {
-          // Look up qualified_record_field{ for the column.
+          // Look up qualified_record_field for the column.
           auto fqf = qualified_record_field{layout.name(), layout.fields[i]};
           auto destination = pptr->indexers_.find(fqf);
           if (destination == pptr->indexers_.end()) {

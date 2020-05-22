@@ -14,9 +14,11 @@
 #include "vast/system/partition.hpp"
 
 #include "vast/aliases.hpp"
+#include "vast/chunk.hpp"
 #include "vast/concept/hashable/xxhash.hpp"
 #include "vast/concept/printable/to_string.hpp"
 #include "vast/concept/printable/vast/expression.hpp"
+#include "vast/concept/printable/vast/table_slice.hpp"
 #include "vast/concept/printable/vast/uuid.hpp"
 #include "vast/detail/assert.hpp"
 #include "vast/event.hpp"
@@ -27,14 +29,17 @@
 #include "vast/logger.hpp"
 #include "vast/qualified_record_field.hpp"
 #include "vast/save.hpp"
+#include "vast/system/file_system.hpp"
 #include "vast/system/index.hpp"
 #include "vast/system/index_common.hpp"
 #include "vast/system/indexer_stage_driver.hpp"
+#include "vast/system/shutdown.hpp"
 #include "vast/system/spawn_indexer.hpp"
 #include "vast/table_slice_column.hpp"
 #include "vast/time.hpp"
 #include "vast/type.hpp"
 
+#include <caf/attach_continuous_stream_stage.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/local_actor.hpp>
 #include <caf/make_counted.hpp>
@@ -45,10 +50,71 @@ using namespace caf;
 
 namespace vast::system {
 
+namespace v2 {
+
+caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
+  self->state.name = "partition-" + to_string(id);
+  self->state.stage = caf::attach_continuous_stream_stage(
+    self,
+    [=](caf::unit_t&) {
+      VAST_DEBUG(self, "initializes stream manager"); // clang-format fix
+    },
+    [=](caf::unit_t&, caf::downstream<table_slice_column>& out,
+        table_slice_ptr x) {
+      VAST_DEBUG(self, "got new table slice", to_string(*x));
+      size_t col = 0;
+      for (auto& field : x->layout().fields) {
+        auto fqf = qualified_record_field{x->layout().name(), field};
+        auto& idx = self->state.indexers[fqf];
+        if (!idx) {
+          VAST_DEBUG(self, "spawn new indexer for field", field.name);
+          // FIXME: properly initialize settings
+          idx = self->spawn(indexer, field.type, caf::settings{});
+          self->state.stage->add_outbound_path(idx);
+        }
+        // FIXME: Forward column views to the corresponding indexers
+        out.push(table_slice_column{x, col++});
+      }
+    },
+    [=](caf::unit_t&, const caf::error& err) {
+      if (err) {
+        VAST_ERROR(self, "aborted with error", self->system().render(err));
+        self->send_exit(self, err);
+      } else {
+        VAST_DEBUG(self, "finalized streaming");
+      }
+    });
+  self->set_exit_handler([=](const caf::exit_msg& msg) {
+    VAST_DEBUG(self, "received EXIT from", msg.source,
+               "with reason:", msg.reason);
+    self->state.stage->out().fan_out_flush();
+    self->state.stage->out().force_emit_batches();
+    self->state.stage->out().close();
+    auto indexers = std::vector<caf::actor>{};
+    for ([[maybe_unused]] auto& [_, idx] : self->state.indexers)
+      indexers.push_back(idx);
+    shutdown<policy::parallel>(self, std::move(indexers));
+  });
+  return {[=](caf::stream<table_slice_ptr> in) {
+            VAST_DEBUG(self, "got a new table slice stream");
+            return self->state.stage->add_inbound_path(in);
+          },
+          [=](atom::persist, const path& part_dir) {
+            // TODO: get a snapshot from all indexers and stitch together into a
+            // single flatbuffer.
+            auto flatbuffer = chunk::make(42);
+            // Delegate I/O to filesystem actor.
+            auto actor = self->system().registry().get(atom::filesystem_v);
+            VAST_ASSERT(actor);
+            auto fs = caf::actor_cast<file_system_type>(actor);
+            return self->delegate(fs, atom::write_v, part_dir, flatbuffer);
+          }};
+}
+
+} // namespace v2
+
 partition::partition(index_state* state, uuid id, size_t max_capacity)
-  : state_(state),
-    id_(std::move(id)),
-    capacity_(max_capacity) {
+  : state_(state), id_(std::move(id)), capacity_(max_capacity) {
   // If the directory already exists, we must have some state from the past and
   // are pre-loading all INDEXER types we are aware of.
   VAST_ASSERT(state != nullptr);
@@ -244,7 +310,7 @@ namespace {
 
 using pptr = vast::system::partition_ptr;
 
-} // namespace <anonymous>
+} // namespace
 
 size_t hash<pptr>::operator()(const pptr& ptr) const {
   hash<vast::uuid> f;

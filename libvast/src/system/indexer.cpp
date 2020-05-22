@@ -13,9 +13,12 @@
 
 #include "vast/system/indexer.hpp"
 
+#include "vast/chunk.hpp"
 #include "vast/concept/printable/stream.hpp"
+#include "vast/concept/printable/to_string.hpp"
 #include "vast/concept/printable/vast/expression.hpp"
 #include "vast/defaults.hpp"
+#include "vast/concept/printable/vast/type.hpp"
 #include "vast/detail/assert.hpp"
 #include "vast/expression.hpp"
 #include "vast/filesystem.hpp"
@@ -25,11 +28,58 @@
 #include "vast/system/instrumentation.hpp"
 #include "vast/system/report.hpp"
 #include "vast/table_slice_column.hpp"
+#include "vast/value_index.hpp"
 #include "vast/view.hpp"
 
 #include <caf/attach_stream_sink.hpp>
 
 namespace vast::system {
+
+namespace v2 {
+
+caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
+                      caf::settings index_opts) {
+  self->state.name = "indexer" + to_string(index_type);
+  return {
+    [=](caf::stream<table_slice_column> in) {
+      VAST_DEBUG(self, "got a new table slice stream");
+      return caf::attach_stream_sink(
+        self, in,
+        [=](caf::unit_t&) {
+          self->state.idx = factory<value_index>::make(index_type, index_opts);
+          if (!self->state.idx) {
+            VAST_ERROR(self, "failed to construct index");
+            self->quit(); // TODO: choose right error code.
+          }
+        },
+        [=](caf::unit_t&, const std::vector<table_slice_column>& xs) {
+          VAST_ASSERT(self->state.idx != nullptr);
+          for (auto& x : xs) {
+            for (size_t i = 0; i < x.slice->rows(); ++i) {
+              auto v = x.slice->at(i, x.column);
+              self->state.idx->append(v, x.slice->offset() + i);
+            }
+          }
+        },
+        [=](caf::unit_t&, const error& err) {
+          if (err && err != caf::exit_reason::user_shutdown) {
+            VAST_ERROR(self, "got a stream error:", self->system().render(err));
+            return;
+          }
+          self->quit(err);
+        });
+    },
+    [=](relational_operator op, const data_view& rhs) {
+      VAST_DEBUG(self, "got query for:", op, to_string(rhs));
+      return self->state.idx->lookup(op, rhs);
+    },
+    [=](atom::snapshot) {
+      // TODO: serialize value index into flatbuffer.
+      return chunk_ptr{};
+    }};
+}
+
+} // namespace v2
 
 indexer_state::indexer_state() {
   // nop
