@@ -1,5 +1,6 @@
 include "meta_index.fbs";
 include "partition.fbs";
+include "uuid.fbs";
 include "version.fbs";
 
 namespace vast.fbs;
@@ -12,8 +13,8 @@ table Index {
   /// Synopsis structures for the contained partitions.
   meta_index: MetaIndex;
 
-  /// The contained partitions.
-  partitions: [Partition];
+  /// The contained partition UUIDs.
+  partitions: [UUID];
 }
 
 root_type Index;
