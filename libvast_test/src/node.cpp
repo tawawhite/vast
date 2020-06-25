@@ -77,8 +77,13 @@ std::vector<event> node::query(std::string expr) {
   MESSAGE("spawn an exporter and register ourselves as sink");
   auto exp = spawn_component("exporter", std::move(expr));
   self->monitor(exp);
+  MESSAGE("send sink");
   self->send(exp, atom::sink_v, self);
+  run();
+  MESSAGE("send run");
   self->send(exp, atom::run_v);
+  run();
+  MESSAGE("send extract");
   self->send(exp, atom::extract_v);
   run();
   MESSAGE("fetch results from mailbox");

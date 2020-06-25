@@ -51,6 +51,17 @@ struct active_partition_state {
   uuid id;
 };
 
+struct query_state {
+  /// The UUID of the query.
+  vast::uuid id;
+
+  /// The query expression.
+  vast::expression expression;
+
+  /// The evaluators for this query
+  std::set<caf::actor> evaluators;
+};
+
 /// The state of the index actor.
 struct index_state {
   using index_stream_stage_ptr
@@ -68,6 +79,9 @@ struct index_state {
 
   /// The maximum number of events that a partition can hold.
   size_t partition_capacity;
+
+  // The meta index.
+  meta_index meta_idx;
 
   /// The directory for persistent state.
   path dir;

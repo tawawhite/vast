@@ -53,6 +53,7 @@
 #include <chrono>
 #include <deque>
 #include <unordered_set>
+#include "caf/error.hpp"
 
 using namespace std::chrono;
 
@@ -167,6 +168,36 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
   return {[=](caf::stream<table_slice_ptr> in) {
     VAST_DEBUG(self, "got a new table slice stream");
     return self->state.stage->add_inbound_path(in);
+  },
+  [=](vast::expression expr) {
+    // std::cerr << "index got expression " << caf::to_string(expr) << std::endl;
+    auto respond = [&](auto&&... xs) {
+      auto mid = self->current_message_id();
+      unsafe_response(self, self->current_sender(), {}, mid.response_id(),
+                      std::forward<decltype(xs)>(xs)...);
+    };
+    // Sanity check.
+    if (self->current_sender() == nullptr) {
+      VAST_ERROR(self, "got an anonymous query (ignored)");
+      respond(caf::sec::invalid_argument);
+      return;
+    }
+    auto& st = self->state;
+    auto client = caf::actor_cast<caf::actor>(self->current_sender());
+    // Convenience function for dropping out without producing hits. Makes
+    // sure that clients always receive a 'done' message.
+    auto no_result = [&] {
+      respond(uuid::nil(), uint32_t{0}, uint32_t{0});
+      self->send(client, atom::done_v);
+    };
+    // Get all potentially matching partitions.
+    auto candidates = st.meta_idx.lookup(expr);
+    // Report no result if no candidates are found.
+    if (candidates.empty()) {
+      VAST_DEBUG(self, "returns without result: no partitions qualify");
+      no_result();
+      return;
+    }
   }};
 }
 

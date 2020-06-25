@@ -40,6 +40,7 @@ namespace v2 {
 caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
                       caf::settings index_opts) {
   self->state.name = "indexer" + to_string(index_type);
+  std::cerr << "constructing indexer " << self->state.name << std::endl;
   return {
     [=](caf::stream<table_slice_column> in) {
       VAST_DEBUG(self, "got a new table slice stream");
@@ -71,6 +72,7 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
     },
     [=](relational_operator op, const data_view& rhs) {
       VAST_DEBUG(self, "got query for:", op, to_string(rhs));
+      std::cerr << "got query for:" << op << caf::to_string(rhs) << std::endl;
       return self->state.idx->lookup(op, rhs);
     },
     [=](atom::snapshot) {
