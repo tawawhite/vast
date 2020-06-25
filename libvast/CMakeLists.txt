@@ -133,6 +133,7 @@ set(libvast_sources
     src/port.cpp
     src/qualified_record_field.cpp
     src/schema.cpp
+    src/schedule.cpp
     src/segment.cpp
     src/segment_builder.cpp
     src/segment_store.cpp
@@ -329,6 +330,7 @@ set(tests
     test/expression_parseable.cpp
     test/factory.cpp
     test/filesystem.cpp
+    test/flatbuffers.cpp
     test/flow.cpp
     test/format/csv.cpp
     test/format/json.cpp
@@ -354,6 +356,7 @@ set(tests
     test/range_map.cpp
     test/save_load.cpp
     test/schema.cpp
+    test/schedule.cpp
     test/scope_linked.cpp
     test/segment.cpp
     test/segment_store.cpp
