@@ -57,6 +57,13 @@
 
 using namespace std::chrono;
 
+//            tableslice              tableslice                           table slice column
+// importer ----------------> index ---------------> active partition ----------------------------> indexer1
+//                                                                    ----------------------------> indexer2
+//                                                                                ...
+//
+
+
 namespace vast::system {
 
 namespace v2 {
@@ -117,6 +124,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       }
       VAST_DEBUG(self, "forwards table slice", to_string(*x));
       out.push(x);
+      self->state.meta_idx.add(active.id, *x);
       if (active.capacity == self->state.partition_capacity
           && x->rows() > active.capacity) {
         VAST_WARNING(self, "got table slice with", x->rows(),
