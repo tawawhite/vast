@@ -20,31 +20,32 @@
 #include <set>
 
 TEST(basic operation) {
-	vast::schedule schedule;
-	CHECK_EQUAL(schedule.size(), 0);
-	// Generate two partition ids and two query ids.
-	vast::uuid puuid1 = vast::uuid::random();
-	vast::uuid puuid2 = vast::uuid::random();
-	vast::uuid quuid1 = vast::uuid::random();
-	vast::uuid quuid2 = vast::uuid::random();
-	// A single query
-	schedule.add(quuid1, puuid1);
-	CHECK_EQUAL(schedule.size(), 1);
-	auto next = schedule.next();
-	CHECK_EQUAL(next, puuid1);
-	// One query using two partitions.
-	CHECK_EQUAL(schedule.size(), 0);
-	schedule.add(quuid1, puuid1);
-	schedule.add(quuid1, puuid2);
-	CHECK_EQUAL(schedule.size(), 2);
-	auto next1 = schedule.next();
-	auto next2 = schedule.next();
-	CHECK_EQUAL((std::set<vast::uuid>{next1, next2}), (std::set<vast::uuid>{puuid1, puuid2}));
-	// Two queries on the same partition.
-	CHECK_EQUAL(schedule.size(), 0);
-	schedule.add(quuid1, puuid1);
-	schedule.add(quuid2, puuid1);
-	CHECK_EQUAL(schedule.size(), 1);
-	auto next_ = schedule.next();
-	CHECK_EQUAL(next_, puuid1);
+  vast::schedule schedule;
+  CHECK_EQUAL(schedule.size(), 0u);
+  // Generate two partition ids and two query ids.
+  vast::uuid puuid1 = vast::uuid::random();
+  vast::uuid puuid2 = vast::uuid::random();
+  vast::uuid quuid1 = vast::uuid::random();
+  vast::uuid quuid2 = vast::uuid::random();
+  // A single query
+  schedule.add(quuid1, puuid1);
+  CHECK_EQUAL(schedule.size(), 1u);
+  auto next = schedule.next();
+  CHECK_EQUAL(next, puuid1);
+  // One query using two partitions.
+  CHECK_EQUAL(schedule.size(), 0u);
+  schedule.add(quuid1, puuid1);
+  schedule.add(quuid1, puuid2);
+  CHECK_EQUAL(schedule.size(), 2u);
+  auto next1 = schedule.next();
+  auto next2 = schedule.next();
+  CHECK_EQUAL((std::set<vast::uuid>{next1, next2}),
+              (std::set<vast::uuid>{puuid1, puuid2}));
+  // Two queries on the same partition.
+  CHECK_EQUAL(schedule.size(), 0u);
+  schedule.add(quuid1, puuid1);
+  schedule.add(quuid2, puuid1);
+  CHECK_EQUAL(schedule.size(), 1u);
+  auto next_ = schedule.next();
+  CHECK_EQUAL(next_, puuid1);
 }

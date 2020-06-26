@@ -33,10 +33,17 @@ namespace vast::system {
 // with the new actorized partition.
 namespace v2 {
 
+struct partition_selector {
+  bool operator()(const vast::qualified_record_field& filter,
+                  const table_slice_column& x) const;
+};
+
 /// The state of the partition actor.
 struct partition_state {
   using partition_stream_stage_ptr = caf::stream_stage_ptr<
-    table_slice_ptr, caf::broadcast_downstream_manager<table_slice_column>>;
+    table_slice_ptr,
+    caf::broadcast_downstream_manager<
+      table_slice_column, vast::qualified_record_field, partition_selector>>;
 
   /// The streaming stage.
   partition_stream_stage_ptr stage;

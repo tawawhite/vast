@@ -45,6 +45,8 @@
 #include <caf/make_counted.hpp>
 #include <caf/stateful_actor.hpp>
 
+#include "caf/broadcast_downstream_manager.hpp"
+
 using namespace std::chrono;
 using namespace caf;
 
@@ -52,8 +54,17 @@ namespace vast::system {
 
 namespace v2 {
 
+bool partition_selector::operator()(const vast::qualified_record_field& filter,
+                                    const table_slice_column& x) const {
+  auto& layout = x.slice->layout();
+  vast::qualified_record_field fqf{layout.name(), layout.fields.at(x.column)};
+  return filter == fqf;
+}
+
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->state.name = "partition-" + to_string(id);
+  // stream stage input: table_slice_ptr
+  // stream stage output: table_slice_column
   self->state.stage = caf::attach_continuous_stream_stage(
     self,
     [=](caf::unit_t&) {
@@ -67,12 +78,13 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         auto fqf = qualified_record_field{x->layout().name(), field};
         auto& idx = self->state.indexers[fqf];
         if (!idx) {
-          VAST_DEBUG(self, "spawn new indexer for field", field.name);
           // FIXME: properly initialize settings
           idx = self->spawn(indexer, field.type, caf::settings{});
-          self->state.stage->add_outbound_path(idx);
+          auto slot = self->state.stage->add_outbound_path(idx);
+          self->state.stage->out().set_filter(slot, fqf);
+          VAST_DEBUG(self, "spawned new indexer for field", field.name,
+                     "at slot", slot);
         }
-        // FIXME: Forward column views to the corresponding indexers
         out.push(table_slice_column{x, col++});
       }
     },
@@ -83,7 +95,19 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       } else {
         VAST_DEBUG(self, "finalized streaming");
       }
-    });
+    },
+    // Every "outbound path" (maybe also inbound?) has a path_state, which
+    // consists of a "Filter" and a vector of "T", the output buffer.
+    // T = table_slice_column
+    // Filter = vast::column_hash
+    // Select = partition_selector
+    // NOTE: The broadcast_downstream_manager has to iterate over all
+    // indexers, and compute the qualified record field name for each. A
+    // specialized downstream manager could optimize this by using e.g. a map
+    // from qualified record fields to downstream indexers.
+    caf::policy::arg<broadcast_downstream_manager<
+      table_slice_column, vast::qualified_record_field, partition_selector>>{});
+
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);

@@ -122,8 +122,9 @@ pack(flatbuffers::FlatBufferBuilder& builder, const uuid& x) {
   // fbs::MetaIndexBuilder meta_index_builder{builder};
   // meta_index_builder.add_state(data);
   // return meta_index_builder.Finish();
-  auto data = builder.CreateVector(reinterpret_cast<const uint8_t*>(&*x.begin()), x.size());
-  fbs::UUIDBuilder uuid_builder {builder};
+  auto data = builder.CreateVector(
+    reinterpret_cast<const uint8_t*>(&*x.begin()), x.size());
+  fbs::UUIDBuilder uuid_builder{builder};
   uuid_builder.add_data(data);
   return uuid_builder.Finish();
 }
@@ -131,8 +132,9 @@ pack(flatbuffers::FlatBufferBuilder& builder, const uuid& x) {
 caf::error unpack(const fbs::UUID& x, uuid& y) {
   if (x.data()->size() != uuid::num_bytes)
     return make_error(ec::format_error, "wrong uuid format");
-  span<const byte, uuid::num_bytes> bytes {reinterpret_cast<const byte*>(x.data()->data()), x.data()->size()};
-  y = uuid {bytes};
+  span<const byte, uuid::num_bytes> bytes{
+    reinterpret_cast<const byte*>(x.data()->data()), x.data()->size()};
+  y = uuid{bytes};
   return ec::no_error;
 }
 

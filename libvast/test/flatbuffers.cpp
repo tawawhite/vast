@@ -11,15 +11,14 @@
  * contained in the LICENSE file.                                             *
  ******************************************************************************/
 
-#include "vast/uuid.hpp"
 #include "vast/chunk.hpp"
-#include "vast/span.hpp"
-#include "vast/system/partition.hpp"
-#include "vast/fbs/utils.hpp"
-#include "vast/meta_index.hpp"
+#include "vast/fbs/meta_index.hpp"
 #include "vast/fbs/utils.hpp"
 #include "vast/fbs/uuid.hpp"
-#include "vast/fbs/meta_index.hpp"
+#include "vast/meta_index.hpp"
+#include "vast/span.hpp"
+#include "vast/system/partition.hpp"
+#include "vast/uuid.hpp"
 
 #define SUITE flatbuffers
 #include "vast/test/test.hpp"
@@ -33,7 +32,8 @@ TEST(uuid roundtrip) {
   auto fb = *expected_fb;
   vast::uuid uuid2 = vast::uuid::random();
   CHECK_NOT_EQUAL(uuid, uuid2);
-  vast::span<const byte> span{reinterpret_cast<const byte*>(fb->data()), fb->size()};
+  vast::span<const byte> span{reinterpret_cast<const byte*>(fb->data()),
+                              fb->size()};
   fbs::unwrap<fbs::UUID>(span, uuid2);
   CHECK_EQUAL(uuid, uuid2);
 }
@@ -43,11 +43,12 @@ TEST(uuid roundtrip) {
 // }
 
 TEST(meta index roundtrip) {
-  auto meta_idx = vast::meta_index {};
+  auto meta_idx = vast::meta_index{};
   auto expected_fb = fbs::wrap(meta_idx, fbs::file_identifier);
   CHECK(expected_fb);
   auto fb = *expected_fb;
-  vast::span<const byte> span{reinterpret_cast<const byte*>(fb->data()), fb->size()};
+  vast::span<const byte> span{reinterpret_cast<const byte*>(fb->data()),
+                              fb->size()};
   vast::meta_index meta_idx_roundtrip;
   fbs::unwrap<fbs::MetaIndex>(span, meta_idx_roundtrip);
 }

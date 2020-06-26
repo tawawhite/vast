@@ -18,8 +18,8 @@
 #include "vast/fbs/uuid.hpp"
 #include "vast/span.hpp"
 
-#include <caf/expected.hpp>
 #include <caf/error.hpp>
+#include <caf/expected.hpp>
 #include <caf/meta/hex_formatted.hpp>
 
 #include <array>
