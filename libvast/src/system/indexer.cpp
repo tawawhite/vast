@@ -33,6 +33,9 @@
 
 #include <caf/attach_stream_sink.hpp>
 
+#include <new>
+#include <flatbuffers/flatbuffers.h>
+
 namespace vast::system {
 
 namespace v2 {
@@ -80,6 +83,16 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       return chunk_ptr{};
     }};
 }
+
+// caf::expected<flatbuffers::Offset<fbs::ValueIndex>>
+// pack(flatbuffers::FlatBufferBuilder& builder, const indexer_state& x) {
+//   auto vb = fbs::ValueIndexBuilder{};
+//   auto builder.CreateString()  
+// }
+
+// caf::error unpack(const fbs::ValueIndex& x, indexer_state& y) {
+
+// }
 
 } // namespace v2
 
