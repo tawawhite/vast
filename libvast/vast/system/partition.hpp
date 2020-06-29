@@ -53,6 +53,10 @@ struct partition_state {
 
   /// A readable name for this partition
   std::string name;
+
+  /// 
+  std::optional<path> persist_path;
+  size_t persisted_indexers;
 };
 
 /// Spawns a partition.

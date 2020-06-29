@@ -73,6 +73,10 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     [=](caf::unit_t&, caf::downstream<table_slice_column>& out,
         table_slice_ptr x) {
       VAST_DEBUG(self, "got new table slice", to_string(*x));
+      if (self->state.persist_path) {
+        VAST_ERROR(self, "got new input data after being persisted");
+        return;
+      }
       size_t col = 0;
       for (auto& field : x->layout().fields) {
         auto fqf = qualified_record_field{x->layout().name(), field};
@@ -99,7 +103,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     // Every "outbound path" (maybe also inbound?) has a path_state, which
     // consists of a "Filter" and a vector of "T", the output buffer.
     // T = table_slice_column
-    // Filter = vast::column_hash
+    // Filter = vast::qualified_record_field
     // Select = partition_selector
     // NOTE: The broadcast_downstream_manager has to iterate over all
     // indexers, and compute the qualified record field name for each. A
@@ -107,7 +111,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     // from qualified record fields to downstream indexers.
     caf::policy::arg<broadcast_downstream_manager<
       table_slice_column, vast::qualified_record_field, partition_selector>>{});
-
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);
@@ -124,6 +127,18 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
             return self->state.stage->add_inbound_path(in);
           },
           [=](atom::persist, const path& part_dir) {
+            auto& st = self->state;
+            st.persist_path = part_dir;
+            st.persisted_indexers = 0;
+            for (auto& kv : st.indexers) {
+              self->send(kv.second, atom::persist);
+            }
+          },
+          [=](atom::done, caf::expected<vast::chunk> chunk) {
+            if ()
+            ++self->state.persisted_indexers;
+            if (self->state.persisted_indexers < indexers_.size())
+              return;
             // TODO: get a snapshot from all indexers and stitch together into a
             // single flatbuffer.
             auto flatbuffer = chunk::make(42);
