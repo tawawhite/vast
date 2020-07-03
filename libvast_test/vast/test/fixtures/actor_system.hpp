@@ -32,6 +32,7 @@ namespace fixtures {
 /// testing.
 struct test_configuration : vast::system::configuration {
   test_configuration();
+  caf::error parse(int argc, char** argv);
 };
 
 /// A fixture with an actor system that uses the default work-stealing

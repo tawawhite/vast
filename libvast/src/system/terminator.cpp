@@ -25,6 +25,7 @@ namespace vast::system {
 
 template <class Policy>
 caf::behavior terminator(caf::stateful_actor<terminator_state>* self) {
+  std::cerr << "spawn terminator with id " << self->id() << std::endl;
   self->set_down_handler([=](const caf::down_msg& msg) {
     // Remove actor from list of remaining actors.
     VAST_DEBUG(self, "received DOWN from actor", msg.source);

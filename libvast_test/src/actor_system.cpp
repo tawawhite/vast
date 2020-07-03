@@ -31,6 +31,11 @@ test_configuration::test_configuration() {
     vast::rm(log_file);
 }
 
+caf::error test_configuration::parse(int argc, char** argv) {
+  set("logger.file-verbosity", caf::atom("trace"));
+  return caf::none;
+}
+
 /// A fixture with an actor system that uses the default work-stealing
 /// scheduler.
 actor_system::actor_system() : sys(config), self(sys, true) {

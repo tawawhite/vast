@@ -23,6 +23,9 @@
 #include "vast/detail/assert.hpp"
 #include "vast/event.hpp"
 #include "vast/expression_visitors.hpp"
+#include "vast/fbs/partition.hpp"
+#include "vast/fbs/utils.hpp"
+#include "vast/fbs/uuid.hpp"
 #include "vast/fwd.hpp"
 #include "vast/ids.hpp"
 #include "vast/load.hpp"
@@ -131,22 +134,38 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
             st.persist_path = part_dir;
             st.persisted_indexers = 0;
             for (auto& kv : st.indexers) {
-              self->send(kv.second, atom::persist);
+              self->send(kv.second, atom::persist_v,
+                         caf::actor_cast<caf::actor>(self));
             }
           },
           [=](atom::done, caf::expected<vast::chunk> chunk) {
-            if ()
             ++self->state.persisted_indexers;
-            if (self->state.persisted_indexers < indexers_.size())
+            if (chunk.error()) {
+              // TODO: If one indexer reports an error, should we abandon the
+              // whole partition or still persist the remaining chunks?
+              VAST_ERROR(self, "cant persist indexer", chunk.error());
+              return;
+            }
+            // self->state.chunks[self->current_sender()->id()] = *chunk; // FIXME
+            VAST_DEBUG(self, "got chunk from ...");
+            if (self->state.persisted_indexers < self->state.indexers.size())
               return;
             // TODO: get a snapshot from all indexers and stitch together into a
             // single flatbuffer.
-            auto flatbuffer = chunk::make(42);
+            // auto flatbuffer = chunk::make(42);
+            flatbuffers::FlatBufferBuilder builder;
+            fbs::PartitionBuilder partition_builder(builder);
+            // partition_builder.add_uuid(wrap(self->state.id));
+            auto partition = partition_builder.Finish();
+            builder.Finish(partition);
             // Delegate I/O to filesystem actor.
             auto actor = self->system().registry().get(atom::filesystem_v);
             VAST_ASSERT(actor);
             auto fs = caf::actor_cast<file_system_type>(actor);
-            return self->delegate(fs, atom::write_v, part_dir, flatbuffer);
+            VAST_ASSERT(self->state.persist_path);
+            // self->delegate(fs, atom::write_v, *self->state.persist_path,
+            // flatbuffer); // FIXME
+            return;
           }};
 }
 

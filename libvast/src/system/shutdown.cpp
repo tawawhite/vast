@@ -22,12 +22,15 @@
 
 #include <caf/response_promise.hpp>
 
+#include "caf/logger.hpp"
+
 namespace vast::system {
 
 template <class Policy>
 void shutdown(caf::event_based_actor* self, std::vector<caf::actor> xs) {
   auto t = self->spawn(terminator<Policy>);
   auto timeout = defaults::system::shutdown_timeout;
+  std::cout << timeout.count() << std::endl;
   self->request(t, timeout, std::move(xs))
     .then(
       [=](atom::done) {

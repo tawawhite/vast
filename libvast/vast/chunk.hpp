@@ -25,6 +25,7 @@
 #include <caf/ref_counted.hpp>
 
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <utility>
@@ -62,22 +63,28 @@ public:
   /// @pre `size > 0 && static_cast<bool>(deleter)`
   static chunk_ptr make(size_type size, void* data, deleter_type deleter);
 
-  /// Construct a chunk from a container of bytes.
-  /// @param xs The container of bytes.
+  /// Construct a chunk from a std::vector of bytes.
+  /// @param xs The std::vector of bytes.
   /// @returns A chunk pointer or `nullptr` on failure.
   /// @pre `std::size(xs) != 0`
-  template <class Container,
-            class = std::enable_if_t<detail::is_container<Container>>>
-  static chunk_ptr make(Container xs) {
-    static_assert(sizeof(typename Container::value_type) == 1,
-                  "chunks only support byte containers");
+  template <typename Byte>
+  static chunk_ptr make(std::vector<Byte>&& xs) {
+    static_assert(sizeof(Byte) == 1);
     VAST_ASSERT(std::size(xs) != 0);
-    auto ys = std::make_shared<Container>(std::move(xs));
+    auto ys = std::make_shared<std::vector<Byte>>(std::move(xs));
     auto deleter = [=]() mutable { ys.reset(); };
-    auto data = std::data(*ys);
-    // The deleter won't touch the data.
-    using mutable_data = std::decay_t<decltype(*data)>*;
-    return make(std::size(*ys), const_cast<mutable_data>(data), deleter);
+    return make(ys->size(), ys->data(), deleter);
+  }
+
+  // Construct a chunk by copying a range of bytes.
+  template <typename Byte>
+  static chunk_ptr copy(size_type size, const Byte* data) {
+    static_assert(sizeof(Byte) == 1);
+    VAST_ASSERT(size > 0);
+    auto chunk = make(size);
+    if (chunk)
+      ::memcpy(chunk->data_, data, size);
+    return chunk;
   }
 
   /// Memory-maps a chunk from a read-only file.

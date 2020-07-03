@@ -14,6 +14,8 @@
 #pragma once
 
 #include "vast/detail/stable_map.hpp"
+#include "vast/fbs/partition.hpp"
+#include "vast/filesystem.hpp"
 #include "vast/fwd.hpp"
 #include "vast/ids.hpp"
 #include "vast/qualified_record_field.hpp"
@@ -26,6 +28,8 @@
 #include <caf/stream_slot.hpp>
 
 #include <unordered_map>
+
+#include "caf/fwd.hpp"
 
 namespace vast::system {
 
@@ -45,6 +49,9 @@ struct partition_state {
     caf::broadcast_downstream_manager<
       table_slice_column, vast::qualified_record_field, partition_selector>>;
 
+  /// Uniquely identifies this partition.
+  uuid id;
+
   /// The streaming stage.
   partition_stream_stage_ptr stage;
 
@@ -54,9 +61,10 @@ struct partition_state {
   /// A readable name for this partition
   std::string name;
 
-  /// 
+  ///
   std::optional<path> persist_path;
   size_t persisted_indexers;
+  std::map<caf::actor_id, vast::chunk> chunks;
 };
 
 /// Spawns a partition.
@@ -64,15 +72,15 @@ struct partition_state {
 /// @param id The UUID of this partition.
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
 
-// TODO: merge this with partition_state?
-struct partition_data {
-  
-};
+// // TODO: merge this with partition_state?
+// struct partition_data {
 
-caf::expected<flatbuffers::Offset<fbs::Partition>>
-pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);
+// };
 
-caf::error unpack(const fbs::Partition& x, partition_state& y);
+// caf::expected<flatbuffers::Offset<fbs::Partition>>
+// pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);
+
+// caf::error unpack(const fbs::Partition& x, partition_state& y);
 
 } // namespace v2
 

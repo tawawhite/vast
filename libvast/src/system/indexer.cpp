@@ -33,7 +33,12 @@
 
 #include <caf/attach_stream_sink.hpp>
 
+#include "caf/binary_serializer.hpp"
+
+// #include "caf/serializer_impl.hpp"
+
 #include <new>
+
 #include <flatbuffers/flatbuffers.h>
 
 namespace vast::system {
@@ -57,6 +62,7 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
           }
         },
         [=](caf::unit_t&, const std::vector<table_slice_column>& xs) {
+          // TODO: assert that this indexer has not yet been serialized
           VAST_ASSERT(self->state.idx != nullptr);
           for (auto& x : xs) {
             for (size_t i = 0; i < x.slice->rows(); ++i) {
@@ -78,16 +84,22 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       std::cerr << "got query for:" << op << caf::to_string(rhs) << std::endl;
       return self->state.idx->lookup(op, rhs);
     },
-    [=](atom::snapshot) {
-      // TODO: serialize value index into flatbuffer.
-      return chunk_ptr{};
+    [=](atom::snapshot, caf::actor receiver) {
+      std::vector<char> buf;
+      caf::binary_serializer bs{
+        nullptr,
+        buf}; // TODO: do we need to pass the current actor system as first arg?
+      inspect(bs, self->state.idx);
+      auto chunk = chunk::make(std::move(buf));
+      auto sender = self->current_sender();
+      // self->send(receiver, atom::done_v, *chunk); // FIXME
     }};
 }
 
 // caf::expected<flatbuffers::Offset<fbs::ValueIndex>>
 // pack(flatbuffers::FlatBufferBuilder& builder, const indexer_state& x) {
 //   auto vb = fbs::ValueIndexBuilder{};
-//   auto builder.CreateString()  
+//   auto builder.CreateString()
 // }
 
 // caf::error unpack(const fbs::ValueIndex& x, indexer_state& y) {

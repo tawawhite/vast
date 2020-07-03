@@ -14,8 +14,8 @@
 #pragma once
 
 #include "vast/column_index.hpp"
-#include "vast/filesystem.hpp"
 #include "vast/fbs/partition.hpp"
+#include "vast/filesystem.hpp"
 #include "vast/fwd.hpp"
 #include "vast/system/accountant.hpp"
 #include "vast/system/instrumentation.hpp"
@@ -41,14 +41,6 @@ struct indexer_state {
 /// Indexes a table slice column with a single value index.
 caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
                       caf::settings index_opts);
-
-
-// flatbuffer support
-
-// caf::expected<flatbuffers::Offset<fbs::ValueIndex>>
-// pack(flatbuffers::FlatBufferBuilder& builder, const indexer_state& x);
-
-// caf::error unpack(const fbs::ValueIndex& x, indexer_state& y);
 
 } // namespace v2
 
