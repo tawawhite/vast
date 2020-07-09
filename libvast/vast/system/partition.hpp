@@ -50,7 +50,7 @@ struct partition_state {
       table_slice_column, vast::qualified_record_field, partition_selector>>;
 
   /// Uniquely identifies this partition.
-  uuid id;
+  uuid partition_uuid;
 
   /// The streaming stage.
   partition_stream_stage_ptr stage;
@@ -61,10 +61,17 @@ struct partition_state {
   /// A readable name for this partition
   std::string name;
 
-  ///
+  /// The first ID in the partition.
+  size_t offset;
+
+  /// The number of events in the partition.
+  size_t events;
+
+  /// Peristence-related state
+  caf::response_promise persistence_promise;
   std::optional<path> persist_path;
   size_t persisted_indexers;
-  std::map<caf::actor_id, vast::chunk> chunks;
+  std::map<caf::actor_id, vast::chunk_ptr> chunks;
 };
 
 /// Spawns a partition.

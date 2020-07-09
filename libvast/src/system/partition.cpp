@@ -32,7 +32,7 @@
 #include "vast/logger.hpp"
 #include "vast/qualified_record_field.hpp"
 #include "vast/save.hpp"
-#include "vast/system/file_system.hpp"
+#include "vast/system/filesystem.hpp"
 #include "vast/system/index.hpp"
 #include "vast/system/index_common.hpp"
 #include "vast/system/indexer_stage_driver.hpp"
@@ -67,6 +67,9 @@ bool partition_selector::operator()(const vast::qualified_record_field& filter,
 
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->state.name = "partition-" + to_string(id);
+  self->state.partition_uuid = id;
+  self->state.offset = vast::invalid_id;
+  self->state.events = 0;
   // stream stage input: table_slice_ptr
   // stream stage output: table_slice_column
   self->state.stage = caf::attach_continuous_stream_stage(
@@ -77,10 +80,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     [=](caf::unit_t&, caf::downstream<table_slice_column>& out,
         table_slice_ptr x) {
       VAST_DEBUG(self, "got new table slice", to_string(*x));
-      if (self->state.persist_path) {
-        VAST_ERROR(self, "got new input data after being persisted");
-        return;
-      }
+      // We rely on `invalid_id` being actually being the highest possible id
+      // here.
+      VAST_ASSERT(vast::invalid_id == std::numeric_limits<vast::id>::max());
+      self->state.offset = std::min(x->offset(), self->state.offset);
+      self->state.events += x->rows();
       size_t col = 0;
       for (auto& field : x->layout().fields) {
         auto fqf = qualified_record_field{x->layout().name(), field};
@@ -100,9 +104,8 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       if (err) {
         VAST_ERROR(self, "aborted with error", self->system().render(err));
         self->send_exit(self, err);
-      } else {
-        VAST_DEBUG(self, "finalized streaming");
       }
+      VAST_DEBUG(self, "finalized streaming");
     },
     // Every "outbound path" (maybe also inbound?) has a path_state, which
     // consists of a "Filter" and a vector of "T", the output buffer.
@@ -126,58 +129,104 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       indexers.push_back(idx);
     shutdown<policy::parallel>(self, std::move(indexers));
   });
-  return {[=](caf::stream<table_slice_ptr> in) {
-            VAST_DEBUG(self, "got a new table slice stream");
-            return self->state.stage->add_inbound_path(in);
-          },
-          [=](atom::persist, const path& part_dir) {
-            auto& st = self->state;
-            st.persist_path = part_dir;
-            st.persisted_indexers = 0;
-            for (auto& kv : st.indexers) {
-              self->send(kv.second, atom::snapshot_v,
-                         caf::actor_cast<caf::actor>(self));
-            }
-          },
-          [=](atom::done, vast::chunk_ptr chunk) {
-            ++self->state.persisted_indexers;
-            if (!chunk) {
-              // TODO: If one indexer reports an error, should we abandon the
-              // whole partition or still persist the remaining chunks?
-              VAST_ERROR(
-                self, "cant persist an indexer"); // FIXME: send error message
-              return;
-            }
-            // self->state.chunks[self->current_sender()->id()] = *chunk; // FIXME
-            VAST_DEBUG(self, "got chunk from ...");
-            if (self->state.persisted_indexers < self->state.indexers.size())
-              return;
-            // TODO: get a snapshot from all indexers and stitch together into a
-            // single flatbuffer.
-            flatbuffers::FlatBufferBuilder builder;
-            fbs::PartitionBuilder partition_builder(builder);
-            // partition_builder.add_uuid(wrap(self->state.id));
-            auto partition = partition_builder.Finish();
-            builder.Finish(partition);
-            // Delegate I/O to filesystem actor.
-            auto actor = self->system().registry().get(atom::filesystem_v);
-            if (!actor) {
-              VAST_ERROR(self, "cannot persist state; filesystem actor is "
-                               "already down");
-              return;
-            }
-            auto fs = caf::actor_cast<file_system_type>(actor);
-            VAST_ASSERT(self->state.persist_path);
-            auto fb = builder.Release();
-            // TODO: the chunk constructor creates a shared_ptr
-            auto ys
-              = std::make_shared<flatbuffers::DetachedBuffer>(std::move(fb));
-            auto deleter = [=]() mutable { ys.reset(); };
-            auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
-            self->delegate(fs, atom::write_v, *self->state.persist_path,
-                           fbchunk); // FIXME
-            return;
-          }};
+  return {
+    [=](caf::stream<table_slice_ptr> in) {
+      VAST_DEBUG(self, "got a new table slice stream");
+      return self->state.stage->add_inbound_path(in);
+    },
+    [=](atom::persist, const path& part_dir) {
+      auto& st = self->state;
+      if (!st.persist_path) // FIXME: using persist_path as flag for initial call
+        st.persistence_promise = self->make_response_promise();
+      st.persist_path = part_dir;
+      st.persisted_indexers = 0;
+
+      // Wait for outstanding data to avoid data loss.
+      // TODO: Maybe a more elegant design would be to send a, say,
+      // `persist_stage2` atom when finalizing the stream, but then the case
+      // where the stream finishes before persisting starts becomes more
+      // complicated.
+      if (!self->state.stage->idle()) {
+        VAST_INFO(self, "waiting for stream before persisting");
+        self->delayed_send(self, 50ms, atom::persist_v, part_dir);
+        return;
+      }
+      for (auto& kv : st.indexers) {
+        self->send(kv.second, atom::snapshot_v,
+                   caf::actor_cast<caf::actor>(self));
+      }
+    },
+    [=](atom::done, vast::chunk_ptr chunk) {
+      ++self->state.persisted_indexers;
+      if (!chunk) {
+        // TODO: If one indexer reports an error, should we abandon the
+        // whole partition or still persist the remaining chunks?
+        VAST_ERROR(self,
+                   "cant persist an indexer"); // FIXME: send error message
+        return;
+      }
+      auto sender = self->current_sender()->id();
+      VAST_DEBUG(self, "got chunk from", sender);
+      // TODO: We probably dont need this map, we can just put the builder
+      // in the state and add stuff as it arrives.
+      self->state.chunks.emplace(sender, chunk);
+      if (self->state.persisted_indexers < self->state.indexers.size())
+        return;
+      // TODO: get a snapshot from all indexers and stitch together into a
+      // single flatbuffer.
+      flatbuffers::FlatBufferBuilder builder;
+      fbs::PartitionBuilder partition_builder(builder);
+      auto uuid = pack(builder, self->state.partition_uuid);
+      if (!uuid) {
+        VAST_ERROR(self, "cant flatpack uuid", uuid.error());
+        return; // FIXME: send error message
+      }
+      partition_builder.add_uuid(*uuid);
+      partition_builder.add_offset(self->state.offset); // FIXME
+      partition_builder.add_events(self->state.events); // FIXME
+      for (const auto& kv : self->state.chunks) {
+        auto chunk = kv.second;
+        fbs::ValueIndexBuilder vbuilder(builder);
+        // TODO: Can we somehow get rid of this copy?
+        auto data = builder.CreateVector(
+          reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
+        auto type = builder.CreateString("FIXME");
+        vbuilder.add_type(type);
+        vbuilder.add_data(data);
+      }
+      auto partition = partition_builder.Finish();
+      builder.Finish(partition);
+      // Delegate I/O to filesystem actor.
+      auto actor = self->system().registry().get(atom::filesystem_v);
+      if (!actor) {
+        VAST_ERROR(self, "cannot persist state; filesystem actor is "
+                         "already down");
+        return; // FIXME: send error message
+      }
+      auto fs = caf::actor_cast<filesystem_type>(actor);
+      VAST_ASSERT(self->state.persist_path);
+      auto fb = builder.Release();
+      // TODO: the chunk constructor creates a shared_ptr
+      auto ys = std::make_shared<flatbuffers::DetachedBuffer>(std::move(fb));
+      auto deleter = [=]() mutable { ys.reset(); };
+      auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
+      VAST_VERBOSE(self, "persisting partition with total size", ys->size(),
+                   "bytes");
+      // auto x = self->request(caf::actor_cast<caf::actor>(fs), caf::infinite,
+      // *self->state.persist_path, fbchunk)
+      //       .then(
+      //     [=](caf::expected<atom::ok>) {
+      //       self->state.persistence_promise.deliver()
+      //     },
+      //     [=](const caf::error& err) {
+      //       VAST_ERROR(self, "failed to persist partition", active.id, ":",
+      //       err); self->quit(err);
+      //     });
+      self->state.persistence_promise.delegate(
+        fs, atom::write_v, *self->state.persist_path, fbchunk);
+      // self->delegate(fs, atom::write_v, *self->state.persist_path, fbchunk);
+      return; // FIXME: send error message
+    }};
 }
 
 } // namespace v2

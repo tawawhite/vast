@@ -100,10 +100,10 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     self->request(active.actor, caf::infinite, atom::persist_v, part_dir)
       .then(
         [=](atom::ok) {
-          VAST_DEBUG(self, "successfully persisted partition", active.id);
+          VAST_INFO(self, "successfully persisted partition", active.id);
         },
         [=](const caf::error& err) {
-          VAST_ERROR(self, "failed to persist partition", active.id);
+          VAST_ERROR(self, "failed to persist partition", active.id, ":", err);
           self->quit(err);
         });
   };
@@ -176,42 +176,43 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     VAST_DEBUG(self, "brings down", partitions.size(), "partitions");
     shutdown<policy::parallel>(self, std::move(partitions));
   });
-  return {[=](caf::stream<table_slice_ptr> in) {
-            VAST_DEBUG(self, "got a new table slice stream");
-            return self->state.stage->add_inbound_path(in);
-          },
-          [=](vast::expression expr) {
-            // std::cerr << "index got expression " << caf::to_string(expr) <<
-            // std::endl;
-            auto respond = [&](auto&&... xs) {
-              auto mid = self->current_message_id();
-              unsafe_response(self, self->current_sender(), {},
-                              mid.response_id(),
-                              std::forward<decltype(xs)>(xs)...);
-            };
-            // Sanity check.
-            if (self->current_sender() == nullptr) {
-              VAST_ERROR(self, "got an anonymous query (ignored)");
-              respond(caf::sec::invalid_argument);
-              return;
-            }
-            auto& st = self->state;
-            auto client = caf::actor_cast<caf::actor>(self->current_sender());
-            // Convenience function for dropping out without producing hits.
-            // Makes sure that clients always receive a 'done' message.
-            auto no_result = [&] {
-              respond(uuid::nil(), uint32_t{0}, uint32_t{0});
-              self->send(client, atom::done_v);
-            };
-            // Get all potentially matching partitions.
-            auto candidates = st.meta_idx.lookup(expr);
-            // Report no result if no candidates are found.
-            if (candidates.empty()) {
-              VAST_DEBUG(self, "returns without result: no partitions qualify");
-              no_result();
-              return;
-            }
-          }};
+  return {
+    [=](caf::stream<table_slice_ptr> in) {
+      VAST_DEBUG(self, "got a new table slice stream");
+      return self->state.stage->add_inbound_path(in);
+    },
+    // The partition delegates the actual writing to the filesystem actor,
+    // so we dont really get more information than a binary ok/not-ok here.
+    [=](caf::result<atom::ok>) { VAST_VERBOSE(self, "persisted partition"); },
+    [=](vast::expression expr) {
+      auto respond = [&](auto&&... xs) {
+        auto mid = self->current_message_id();
+        unsafe_response(self, self->current_sender(), {}, mid.response_id(),
+                        std::forward<decltype(xs)>(xs)...);
+      };
+      // Sanity check.
+      if (self->current_sender() == nullptr) {
+        VAST_ERROR(self, "got an anonymous query (ignored)");
+        respond(caf::sec::invalid_argument);
+        return;
+      }
+      auto& st = self->state;
+      auto client = caf::actor_cast<caf::actor>(self->current_sender());
+      // Convenience function for dropping out without producing hits.
+      // Makes sure that clients always receive a 'done' message.
+      auto no_result = [&] {
+        respond(uuid::nil(), uint32_t{0}, uint32_t{0});
+        self->send(client, atom::done_v);
+      };
+      // Get all potentially matching partitions.
+      auto candidates = st.meta_idx.lookup(expr);
+      // Report no result if no candidates are found.
+      if (candidates.empty()) {
+        VAST_DEBUG(self, "returns without result: no partitions qualify");
+        no_result();
+        return;
+      }
+    }};
 }
 
 } // namespace v2
