@@ -83,7 +83,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     self->state.active_partition.actor = part;
     self->state.active_partition.stream_slot = slot;
     self->state.active_partition.capacity = partition_capacity;
-    self->state.active_partition.capacity = 200; // FIXME: remove after testing
+    // self->state.active_partition.capacity = 200; // FIXME: remove after testing
     self->state.active_partition.id = id;
     VAST_DEBUG(self, "created new partition", to_string(id));
   };

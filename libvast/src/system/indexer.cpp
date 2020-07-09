@@ -47,8 +47,7 @@ namespace v2 {
 
 caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
                       caf::settings index_opts) {
-  self->state.name = "indexer" + to_string(index_type);
-  std::cerr << "constructing indexer " << self->state.name << std::endl;
+  self->state.name = "indexer-" + to_string(index_type);
   return {
     [=](caf::stream<table_slice_column> in) {
       VAST_DEBUG(self, "got a new table slice stream");
@@ -81,7 +80,6 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
     },
     [=](relational_operator op, const data_view& rhs) {
       VAST_DEBUG(self, "got query for:", op, to_string(rhs));
-      std::cerr << "got query for:" << op << caf::to_string(rhs) << std::endl;
       return self->state.idx->lookup(op, rhs);
     },
     [=](atom::snapshot, caf::actor receiver) {
@@ -92,19 +90,9 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       inspect(bs, self->state.idx);
       auto chunk = chunk::make(std::move(buf));
       auto sender = self->current_sender();
-      // self->send(receiver, atom::done_v, *chunk); // FIXME
+      self->send(receiver, atom::done_v, chunk);
     }};
 }
-
-// caf::expected<flatbuffers::Offset<fbs::ValueIndex>>
-// pack(flatbuffers::FlatBufferBuilder& builder, const indexer_state& x) {
-//   auto vb = fbs::ValueIndexBuilder{};
-//   auto builder.CreateString()
-// }
-
-// caf::error unpack(const fbs::ValueIndex& x, indexer_state& y) {
-
-// }
 
 } // namespace v2
 

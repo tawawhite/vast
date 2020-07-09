@@ -49,6 +49,7 @@
 #include <caf/stateful_actor.hpp>
 
 #include "caf/broadcast_downstream_manager.hpp"
+#include <flatbuffers/flatbuffers.h>
 
 using namespace std::chrono;
 using namespace caf;
@@ -134,16 +135,17 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
             st.persist_path = part_dir;
             st.persisted_indexers = 0;
             for (auto& kv : st.indexers) {
-              self->send(kv.second, atom::persist_v,
+              self->send(kv.second, atom::snapshot_v,
                          caf::actor_cast<caf::actor>(self));
             }
           },
-          [=](atom::done, caf::expected<vast::chunk> chunk) {
+          [=](atom::done, vast::chunk_ptr chunk) {
             ++self->state.persisted_indexers;
-            if (chunk.error()) {
+            if (!chunk) {
               // TODO: If one indexer reports an error, should we abandon the
               // whole partition or still persist the remaining chunks?
-              VAST_ERROR(self, "cant persist indexer", chunk.error());
+              VAST_ERROR(
+                self, "cant persist an indexer"); // FIXME: send error message
               return;
             }
             // self->state.chunks[self->current_sender()->id()] = *chunk; // FIXME
@@ -152,7 +154,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
               return;
             // TODO: get a snapshot from all indexers and stitch together into a
             // single flatbuffer.
-            // auto flatbuffer = chunk::make(42);
             flatbuffers::FlatBufferBuilder builder;
             fbs::PartitionBuilder partition_builder(builder);
             // partition_builder.add_uuid(wrap(self->state.id));
@@ -160,11 +161,21 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
             builder.Finish(partition);
             // Delegate I/O to filesystem actor.
             auto actor = self->system().registry().get(atom::filesystem_v);
-            VAST_ASSERT(actor);
+            if (!actor) {
+              VAST_ERROR(self, "cannot persist state; filesystem actor is "
+                               "already down");
+              return;
+            }
             auto fs = caf::actor_cast<file_system_type>(actor);
             VAST_ASSERT(self->state.persist_path);
-            // self->delegate(fs, atom::write_v, *self->state.persist_path,
-            // flatbuffer); // FIXME
+            auto fb = builder.Release();
+            // TODO: the chunk constructor creates a shared_ptr
+            auto ys
+              = std::make_shared<flatbuffers::DetachedBuffer>(std::move(fb));
+            auto deleter = [=]() mutable { ys.reset(); };
+            auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
+            self->delegate(fs, atom::write_v, *self->state.persist_path,
+                           fbchunk); // FIXME
             return;
           }};
 }

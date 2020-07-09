@@ -17,6 +17,7 @@
 #include "vast/detail/assert.hpp"
 #include "vast/detail/operators.hpp"
 #include "vast/detail/type_traits.hpp"
+#include "vast/die.hpp"
 #include "vast/fwd.hpp"
 #include "vast/span.hpp"
 
@@ -27,8 +28,11 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
+
+#include <flatbuffers/flatbuffers.h>
 
 namespace vast {
 
@@ -67,6 +71,10 @@ public:
   /// @param xs The std::vector of bytes.
   /// @returns A chunk pointer or `nullptr` on failure.
   /// @pre `std::size(xs) != 0`
+  // FIXME: Make a type whitelist. This optimization only makes sense for owning
+  // containers of bytes that implement move constructors. (i.e. we want to
+  // allow vector<char>, vector<byte>, flatbuffer, etc. but not string_view,
+  // vast::span, etc.)
   template <typename Byte>
   static chunk_ptr make(std::vector<Byte>&& xs) {
     static_assert(sizeof(Byte) == 1);
@@ -172,5 +180,12 @@ private:
   size_type size_;
   deleter_type deleter_;
 };
+
+template <typename Inspector>
+// [[noreturn]]
+typename Inspector::return_type inspect(Inspector&, chunk&);
+// {
+//   vast::die("dont serialize chunks plz");
+// }
 
 } // namespace vast
