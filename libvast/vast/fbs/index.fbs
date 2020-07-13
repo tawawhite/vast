@@ -5,7 +5,7 @@ include "version.fbs";
 
 namespace vast.fbs;
 
-/// The persistent state of the meta index.
+/// The persistent state of the index.
 table Index {
   /// The version of the index state.
   version: Version;

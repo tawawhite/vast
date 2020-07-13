@@ -182,8 +182,8 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         return; // FIXME: send error message
       }
       partition_builder.add_uuid(*uuid);
-      partition_builder.add_offset(self->state.offset); // FIXME
-      partition_builder.add_events(self->state.events); // FIXME
+      partition_builder.add_offset(self->state.offset);
+      partition_builder.add_events(self->state.events);
       for (const auto& kv : self->state.chunks) {
         auto chunk = kv.second;
         fbs::ValueIndexBuilder vbuilder(builder);
@@ -212,21 +212,17 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);
       VAST_VERBOSE(self, "persisting partition with total size", ys->size(),
                    "bytes");
-      // auto x = self->request(caf::actor_cast<caf::actor>(fs), caf::infinite,
-      // *self->state.persist_path, fbchunk)
-      //       .then(
-      //     [=](caf::expected<atom::ok>) {
-      //       self->state.persistence_promise.deliver()
-      //     },
-      //     [=](const caf::error& err) {
-      //       VAST_ERROR(self, "failed to persist partition", active.id, ":",
-      //       err); self->quit(err);
-      //     });
       self->state.persistence_promise.delegate(
         fs, atom::write_v, *self->state.persist_path, fbchunk);
-      // self->delegate(fs, atom::write_v, *self->state.persist_path, fbchunk);
       return; // FIXME: send error message
     }};
+}
+
+caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
+                                 uuid id, vast::chunk chunk) {
+  [[maybe_unused]] auto partition = fbs::GetPartition(chunk.data());
+  // FIXME: Add querying logic
+  return {[=] { return; }};
 }
 
 } // namespace v2

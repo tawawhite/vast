@@ -79,15 +79,9 @@ struct partition_state {
 /// @param id The UUID of this partition.
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
 
-// // TODO: merge this with partition_state?
-// struct partition_data {
-
-// };
-
-// caf::expected<flatbuffers::Offset<fbs::Partition>>
-// pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);
-
-// caf::error unpack(const fbs::Partition& x, partition_state& y);
+/// Spawns a read-only partition.
+caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
+                                 uuid id, vast::chunk chunk);
 
 } // namespace v2
 

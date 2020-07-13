@@ -14,6 +14,7 @@
 #pragma once
 
 #include "vast/detail/flat_lru_cache.hpp"
+#include "vast/detail/lru_cache.hpp"
 #include "vast/detail/stable_map.hpp"
 #include "vast/expression.hpp"
 #include "vast/filesystem.hpp"
@@ -68,19 +69,60 @@ struct index_state {
     = caf::stream_stage_ptr<table_slice_ptr,
                             caf::broadcast_downstream_manager<table_slice_ptr>>;
 
+  /// Loads partitions from disk by UUID.
+  class partition_factory {
+  public:
+    explicit partition_factory(index_state* st = nullptr) : st_(st) {
+      // nop
+    }
+
+    caf::actor operator()(const uuid& id) const;
+
+  private:
+    index_state* st_;
+  };
+
+  /// Stores partitions sorted by access frequency.
+  using partition_cache_type
+    = detail::lru_cache<uuid, caf::actor, partition_factory>;
+
+  explicit index_state(caf::stateful_actor<index_state>* self);
+
+  // -- persistence ------------------------------------------------------------
+
+  /// Loads the state from disk.
+  caf::error load_from_disk();
+
+  /// Persists the state to disk.
+  caf::error flush_to_disk();
+
+  // -- data members ----------------------------------------------------------
+
+  caf::stateful_actor<index_state>* self;
+
   /// The streaming stage.
   index_stream_stage_ptr stage;
 
   /// The single active (read/write) partition.
   active_partition_state active_partition = {};
 
+  /// Recently accessed partitions.
+  // std::unordered_map<uuid, caf::actor> passive_partitions;
+
   /// The set of passive (read-only) partitions.
-  std::unordered_map<uuid, caf::actor> passive_partitions;
+  partition_cache_type lru_partitions;
+
+  // The set of partitions that exist on disk. TODO: not sure if we even need this
+  std::vector<uuid> persisted_partitions;
 
   /// The maximum number of events that a partition can hold.
   size_t partition_capacity;
 
-  // The meta index.
+  size_t in_mem_partitions;
+
+  size_t taste_partitions;
+
+  /// The meta index.
   meta_index meta_idx;
 
   /// The directory for persistent state.
@@ -94,7 +136,8 @@ struct index_state {
 /// @param partition_capacity The maximum number of events per partition.
 /// @pre `partition_capacity > 0
 caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
-                    size_t partition_capacity);
+                    size_t partition_capacity, size_t in_mem_partitions,
+                    size_t taste_partitions);
 
 } // namespace v2
 

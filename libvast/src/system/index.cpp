@@ -28,6 +28,7 @@
 #include "vast/detail/narrow.hpp"
 #include "vast/detail/notifying_stream_manager.hpp"
 #include "vast/expression_visitors.hpp"
+#include "vast/fbs/index.hpp"
 #include "vast/fbs/meta_index.hpp"
 #include "vast/fbs/utils.hpp"
 #include "vast/ids.hpp"
@@ -39,6 +40,7 @@
 #include "vast/save.hpp"
 #include "vast/system/accountant.hpp"
 #include "vast/system/evaluator.hpp"
+#include "vast/system/filesystem.hpp"
 #include "vast/system/index_common.hpp"
 #include "vast/system/partition.hpp"
 #include "vast/system/query_supervisor.hpp"
@@ -58,23 +60,96 @@
 
 using namespace std::chrono;
 
-//            tableslice              tableslice                           table
-//            slice column
-// importer ----------------> index ---------------> active partition
-// ----------------------------> indexer1
-//                                                                    ---------------------------->
-//                                                                    indexer2
-//                                                                                ...
+// clang-format off
 //
+//            tableslice              tableslice                           table slice column
+// importer ----------------> index ---------------> active partition ----------------------------> indexer1
+//                                                                    ----------------------------> indexer2
+//                                                                                ...
+// clang-format on
 
 namespace vast::system {
 
 namespace v2 {
 
+index_state::index_state(caf::stateful_actor<index_state>* self)
+  : self(self), lru_partitions(10, partition_factory{this}) {
+}
+
+caf::actor index_state::partition_factory::operator()(const uuid& id) const {
+  // Load partition from disk.
+  VAST_DEBUG(st_->self, "loads partition", id);
+  VAST_ASSERT(std::find(st_->persisted_partitions.begin(),
+                        st_->persisted_partitions.end(), id)
+              != st_->persisted_partitions.end());
+  auto path = st_->dir / to_string(id);
+  // FIXME: Delegate I/O to filesystem actor.
+  auto bytes = io::read(path);
+  if (!bytes)
+    return nullptr;
+  auto chunk = chunk::make(std::move(*bytes));
+  if (!chunk)
+    return nullptr;
+  return st_->self->spawn(readonly_partition, id, *chunk);
+  ;
+}
+
+caf::error index_state::load_from_disk() {
+  // TODO: Not sure if we should already use the filesystem actor here,
+  // this function is only once used during startup so it seems like
+  // unnecessary
+  if (!exists(dir)) {
+    VAST_DEBUG(self, "found no directory to load from");
+    return caf::none;
+  }
+  // FIXME: move filename computation into function
+  if (auto fname = dir / "index.bin"; exists(fname)) {
+    VAST_VERBOSE(self, "loads index from", fname);
+    auto buffer = io::read(fname);
+    if (!buffer) {
+      VAST_ERROR(self, "failed to read meta index file:",
+                 self->system().render(buffer.error()));
+      return buffer.error();
+    }
+    auto index = fbs::GetIndex(buffer->data());
+    [[maybe_unused]] auto version = index->version(); // FIXME: compare version
+    auto meta_idx = index->meta_index();
+    VAST_ASSERT(meta_idx);
+    unpack(*meta_idx, this->meta_idx); // FIXME: check return value
+    auto partition_uuids = index->partitions();
+    VAST_ASSERT(partition_uuids);
+    for (auto uuid_fb : *partition_uuids) {
+      VAST_ASSERT(uuid_fb);
+      vast::uuid partition_uuid;
+      unpack(*uuid_fb, partition_uuid);
+      persisted_partitions.push_back(partition_uuid);
+    }
+  }
+  return caf::none;
+}
+
+/// Persists the state to disk.
+caf::error flush_to_disk() {
+  return make_error(ec::unimplemented, "Not supported yet!");
+}
+
 caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
-                    size_t partition_capacity) {
+                    size_t partition_capacity, size_t in_mem_partitions,
+                    size_t taste_partitions) {
   VAST_VERBOSE(self, "initializes index in", dir);
   VAST_VERBOSE(self, "caps partition size at", partition_capacity, "events");
+  // Set members.
+  self->state.self = self;
+  self->state.dir = dir;
+  // Read persistent state.
+  if (auto err = self->state.load_from_disk()) {
+    vast::die("Cannot load index state from disk, please try again or remove "
+              "it to start with a clean state (after making a backup");
+    // return err;
+  }
+  // FIXME: is it safe to just pass around a raw pointer here?
+  self->state.lru_partitions.resize(in_mem_partitions);
+  self->state.taste_partitions = taste_partitions;
   // Creates a new active partition and updates index state.
   auto create_active_partition = [=] {
     auto id = uuid::random();
@@ -100,7 +175,8 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     self->request(active.actor, caf::infinite, atom::persist_v, part_dir)
       .then(
         [=](atom::ok) {
-          VAST_INFO(self, "successfully persisted partition", active.id);
+          VAST_VERBOSE(self, "successfully persisted partition", active.id);
+          self->state.persisted_partitions.push_back(active.id);
         },
         [=](const caf::error& err) {
           VAST_ERROR(self, "failed to persist partition", active.id, ":", err);
@@ -121,7 +197,8 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       } else if (x->rows() > active.capacity) {
         VAST_DEBUG(self, "exceeds active capacity by",
                    (x->rows() - active.capacity));
-        self->state.passive_partitions[active.id] = active.actor;
+        // self->state.passive_partitions[active.id] = active.actor;
+        self->state.lru_partitions.put(active.id, active.actor);
         decomission_active_partition();
         create_active_partition();
       }
@@ -165,13 +242,15 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       decomission_active_partition();
     // Collect partitions for termination.
     std::vector<caf::actor> partitions;
-    partitions.reserve(self->state.passive_partitions.size() + 1);
+    // partitions.reserve(self->state.passive_partitions.size() + 1);
+    partitions.reserve(self->state.lru_partitions.size() + 1);
     partitions.push_back(self->state.active_partition.actor);
-    for ([[maybe_unused]] auto& [_, part] : self->state.passive_partitions)
+    for ([[maybe_unused]] auto& [_, part] : self->state.lru_partitions)
       partitions.push_back(part);
     // FIXME: this manual ref-count decrementing should not be necessary, but
     // it currently doesn't work otherwise.
-    self->state.passive_partitions.clear();
+    // self->state.passive_partitions.clear();
+    self->state.lru_partitions.clear();
     // Terminate partition actors.
     VAST_DEBUG(self, "brings down", partitions.size(), "partitions");
     shutdown<policy::parallel>(self, std::move(partitions));
