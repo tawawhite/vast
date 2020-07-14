@@ -25,7 +25,8 @@
 // from the original code and a `factory` member was added to create new entries
 // if a key is missing from the cache.
 // Additionally, iteration support and `resize()` and `clear()` function were
-// added.
+// added; and `exists()` was renamed to `contains()` for closer alignment with
+// the standard library containers.
 
 #pragma once
 
@@ -103,7 +104,7 @@ public:
     ;
   }
 
-  bool exists(const Key& key) const {
+  bool contains(const Key& key) const {
     return cache_items_map_.find(key) != cache_items_map_.end();
   }
 
