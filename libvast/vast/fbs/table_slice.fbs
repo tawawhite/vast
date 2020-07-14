@@ -9,14 +9,14 @@ enum Encoding : byte {
 
 /// A subset of rows of a table.
 table TableSlice {
-  /// The offset in the 2^64 ID event space.
-  offset: ulong;
+  /// The flattened layout of the data.
+  layout: [ubyte]; // TODO: currently CAF binary; make this a separate table
 
   /// The number of events (= rows).
   rows: ulong;
 
-  /// The schema of the data.
-  layout: [ubyte]; // TODO: currently CAF binary; make this a separate table
+  /// The offset in the 2^64 ID event space.
+  offset: ulong;
 
   /// The format of the data.
   encoding: Encoding;

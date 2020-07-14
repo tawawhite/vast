@@ -151,9 +151,9 @@ pack(flatbuffers::FlatBufferBuilder& builder, table_slice_ptr x) {
   auto data_ptr = reinterpret_cast<const uint8_t*>(data_buffer.data());
   auto data = local_builder.CreateVector(data_ptr, data_buffer.size());
   fbs::TableSliceBuilder table_slice_builder{local_builder};
-  table_slice_builder.add_offset(x->offset());
-  table_slice_builder.add_rows(x->rows());
   table_slice_builder.add_layout(layout);
+  table_slice_builder.add_rows(x->rows());
+  table_slice_builder.add_offset(x->offset());
   table_slice_builder.add_encoding(*encoding);
   table_slice_builder.add_data(data);
   auto flat_slice = table_slice_builder.Finish();

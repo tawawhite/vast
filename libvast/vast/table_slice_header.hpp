@@ -13,25 +13,26 @@
 
 #pragma once
 
-#include <cstdint>
-
-#include "vast/aliases.hpp"
+#include "vast/fwd.hpp"
 #include "vast/type.hpp"
+
+#include <caf/meta/type_name.hpp>
 
 namespace vast {
 
 /// The header of a table slice.
 /// @relates table_slice
 struct table_slice_header {
-  record_type layout; // flattened
-  uint64_t rows = 0;
-  id offset = 0;
-};
+  record_type layout = {}; ///< The flattened layout of the data.
+  uint64_t rows = 0;       ///< The number of events (= rows).
+  id offset = 0;           ///< The offset in the 2^64 ID event space.
 
-/// @relates table_slice_header
-template <class Inspector>
-auto inspect(Inspector& f, table_slice_header& x) {
-  return f(x.layout, x.rows, x.offset);
-}
+  /// Type inspection support for CAF.
+  template <class Inspector>
+  friend auto inspect(Inspector& f, table_slice_header& x) {
+    return f(caf::meta::type_name("table_slice_header"), x.layout, x.rows,
+             x.offset);
+  }
+};
 
 } // namespace vast
