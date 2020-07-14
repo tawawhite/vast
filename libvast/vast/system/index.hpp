@@ -52,22 +52,27 @@ struct active_partition_state {
   uuid id;
 };
 
-struct query_state {
-  /// The UUID of the query.
-  vast::uuid id;
-
-  /// The query expression.
-  vast::expression expression;
-
-  /// The evaluators for this query
-  std::set<caf::actor> evaluators;
-};
 
 /// The state of the index actor.
 struct index_state {
   using index_stream_stage_ptr
     = caf::stream_stage_ptr<table_slice_ptr,
                             caf::broadcast_downstream_manager<table_slice_ptr>>;
+
+  // equivalent of lookup_state in the old index
+  struct query_state {
+    /// The UUID of the query.
+    vast::uuid id;
+
+    /// The query expression.
+    vast::expression expression;
+
+    /// The evaluators for this query
+    // std::set<caf::actor> evaluators;
+
+    /// Unscheduled partitions.
+    std::vector<uuid> partitions;
+  };
 
   /// Loads partitions from disk by UUID.
   class partition_factory {
@@ -86,6 +91,8 @@ struct index_state {
   using partition_cache_type
     = detail::lru_cache<uuid, caf::actor, partition_factory>;
 
+  using pending_query_map = detail::stable_map<uuid, evaluation_triples>;
+
   explicit index_state(caf::stateful_actor<index_state>* self);
 
   // -- persistence ------------------------------------------------------------
@@ -95,6 +102,21 @@ struct index_state {
 
   /// Persists the state to disk.
   caf::error flush_to_disk();
+
+  // -- query handling
+
+  bool worker_available();
+
+  caf::actor next_worker();
+
+  /// Prepares a subset of partitions from the lookup_state for evaluation.
+  pending_query_map
+  build_query_map(query_state& lookup, uint32_t num_partitions);
+
+  /// Spawns one evaluator for each partition.
+  /// @returns a query map for passing to INDEX workers over the spawned
+  ///          EVALUATOR actors.
+  query_map launch_evaluators(pending_query_map pqm, expression expr);
 
   // -- data members ----------------------------------------------------------
 
@@ -106,8 +128,8 @@ struct index_state {
   /// The single active (read/write) partition.
   active_partition_state active_partition = {};
 
-  /// Recently accessed partitions.
-  // std::unordered_map<uuid, caf::actor> passive_partitions;
+  /// Partitions that are currently in the process of persisting.
+  std::unordered_map<uuid, caf::actor> unpersisted;
 
   /// The set of passive (read-only) partitions.
   partition_cache_type lru_partitions;
@@ -121,6 +143,12 @@ struct index_state {
   size_t in_mem_partitions;
 
   size_t taste_partitions;
+
+  /// Maps query IDs to pending lookup state.
+  std::unordered_map<uuid, query_state> pending;
+
+  /// Caches idle workers.
+  std::vector<caf::actor> idle_workers;
 
   /// The meta index.
   meta_index meta_idx;

@@ -128,6 +128,82 @@ caf::error index_state::load_from_disk() {
   return caf::none;
 }
 
+bool index_state::worker_available() {
+  return !idle_workers.empty();
+}
+
+caf::actor index_state::next_worker() {
+  auto result = std::move(idle_workers.back());
+  idle_workers.pop_back();
+  return result;
+}
+
+index_state::pending_query_map
+index_state::build_query_map(query_state& lookup, uint32_t num_partitions) {
+  VAST_TRACE(VAST_ARG(lookup), VAST_ARG(num_partitions));
+  if (num_partitions == 0 || lookup.partitions.empty())
+    return {};
+  // Prefer partitions that are already available in RAM.
+  std::partition(lookup.partitions.begin(), lookup.partitions.end(),
+                 [&](const uuid& candidate) {
+                   return (active_partition.actor != nullptr && active_partition.id == candidate)
+                          || unpersisted.count(candidate)
+                          || lru_partitions.contains(candidate);
+                 });
+  // Maps partition IDs to the EVALUATOR actors we are going to spawn.
+  pending_query_map result;
+  // Helper function to spin up EVALUATOR actors for a single partition.
+  auto spin_up = [&](const uuid& partition_id) {
+    // We need to first check whether the ID is the active partition or one
+    // of our unpersisted ones. Only then can we dispatch to our LRU cache.
+    caf::actor part;
+    if (active_partition.actor != nullptr && active_partition.id == partition_id)
+      part = active_partition.actor;
+    else if (auto it = unpersisted.find(partition_id); it != unpersisted.end())
+      part = it->second;
+    else
+      // TODO: Add a way for the cache to return an error, and pass it on to
+      // the caller.
+      part = lru_partitions.get_or_load(partition_id);
+    if (!part) {
+      VAST_ERROR("Could not load partition", partition_id, "that was part of a query id");
+      return;
+    }
+    evaluation_triples eval;
+    // FIXME: send all requests before blocking on the responses
+    self->request(part, caf::infinite, atom::evaluate_v, lookup.expression).await(
+      [&](evaluation_triples triples) { eval = std::move(triples); },
+      [&](const caf::error& error) { VAST_ERROR("oh no :(", error); }); // FIXME
+    if (eval.empty()) {
+      VAST_DEBUG(self, "identified partition", partition_id,
+                 "as candidate in the meta index, but it didn't produce an "
+                 "evaluation map");
+      return;
+    }
+    result.emplace(partition_id, std::move(eval));
+  };
+  // Loop over the candidate set until we either successfully scheduled
+  // num_partitions partitions or run out of candidates.
+  {
+    auto i = lookup.partitions.begin();
+    auto last = lookup.partitions.end();
+    for (; i != last && result.size() < num_partitions; ++i)
+      spin_up(*i);
+    lookup.partitions.erase(lookup.partitions.begin(), i);
+  }
+  return result;
+}
+
+query_map
+index_state::launch_evaluators(pending_query_map pqm, expression expr) {
+  query_map result;
+  for (auto& [id, eval] : pqm) {
+    std::vector<caf::actor> xs{self->spawn(evaluator, expr, std::move(eval))};
+    result.emplace(id, std::move(xs));
+  }
+  return result;
+}
+
 /// Persists the state to disk.
 caf::error flush_to_disk() {
   return make_error(ec::unimplemented, "Not supported yet!");
@@ -263,6 +339,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     // The partition delegates the actual writing to the filesystem actor,
     // so we dont really get more information than a binary ok/not-ok here.
     [=](caf::result<atom::ok>) { VAST_VERBOSE(self, "persisted partition"); },
+    // QUERY HANDLING (copied from v1)
     [=](vast::expression expr) {
       auto respond = [&](auto&&... xs) {
         auto mid = self->current_message_id();
@@ -291,7 +368,98 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
         no_result();
         return;
       }
-    }};
+      // Allows the client to query further results after initial taste.
+      auto query_id = uuid::random();
+      auto lookup = index_state::query_state{query_id, expr, std::move(candidates)};
+      auto pqm = st.build_query_map(lookup, st.taste_partitions);
+      if (pqm.empty()) {
+        VAST_ASSERT(lookup.partitions.empty());
+        VAST_DEBUG(self, "returns without result: no partitions qualify");
+        no_result();
+        return;
+      }
+      auto hits = pqm.size() + lookup.partitions.size();
+      auto scheduling = std::min(taste_partitions, hits);
+      // Notify the client that we don't have more hits.
+      if (scheduling == hits)
+        query_id = uuid::nil();
+      respond(query_id, detail::narrow<uint32_t>(hits),
+              detail::narrow<uint32_t>(scheduling));
+      auto qm = st.launch_evaluators(pqm, expr);
+      VAST_DEBUG(self, "scheduled", qm.size(), "/", hits,
+                 "partitions for query", expr);
+      if (!lookup.partitions.empty()) {
+        [[maybe_unused]] auto result
+          = st.pending.emplace(query_id, std::move(lookup));
+        VAST_ASSERT(result.second);
+      }
+      // Delegate to query supervisor (uses up this worker) and report
+      // query ID + some stats to the client.
+      self->send(st.next_worker(), std::move(expr), std::move(qm), client);
+      if (!st.worker_available())
+        self->unbecome();
+    },
+    [=](const uuid& query_id, uint32_t num_partitions) {
+      auto& st = self->state;
+      // A zero as second argument means the client drops further results.
+      if (num_partitions == 0) {
+        VAST_DEBUG(self, "dropped remaining results for query ID", query_id);
+        st.pending.erase(query_id);
+        return;
+      }
+      // Sanity checks.
+      if (self->current_sender() == nullptr) {
+        VAST_ERROR(self, "got an anonymous query (ignored)");
+        return;
+      }
+      auto client = caf::actor_cast<caf::actor>(self->current_sender());
+      auto iter = st.pending.find(query_id);
+      if (iter == st.pending.end()) {
+        VAST_WARNING(self, "got a request for unknown query ID", query_id);
+        self->send(client, atom::done_v);
+        return;
+      }
+      auto pqm = st.build_query_map(iter->second, num_partitions);
+      if (pqm.empty()) {
+        VAST_ASSERT(iter->second.partitions.empty());
+        st.pending.erase(iter);
+        VAST_DEBUG(self, "returns without result: no partitions qualify");
+        self->send(client, atom::done_v);
+        return;
+      }
+      auto qm = st.launch_evaluators(pqm, iter->second.expression);
+      // Delegate to query supervisor (uses up this worker) and report
+      // query ID + some stats to the client.
+      VAST_DEBUG(self, "schedules", qm.size(), "more partition(s) for query",
+                 iter->first, "with", iter->second.partitions.size(),
+                 "remaining");
+      self->send(st.next_worker(), iter->second.expression, std::move(qm), client);
+      // Cleanup if we exhausted all candidates.
+      if (iter->second.partitions.empty())
+        st.pending.erase(iter);
+    },
+       [=](atom::worker, caf::actor& worker) {
+      self->state.idle_workers.emplace_back(std::move(worker));
+    },
+    [=](atom::done, [[maybe_unused]] uuid partition_id) {
+      // FIXME! (not sure if this actually needs to be implemented here anymore,
+      // the new partition actors should just go away if they're not in the lru cache
+      // and have no query acting on them anymore)
+      // self->state.decrement_indexer_count(partition_id);
+    },
+    [=](caf::stream<table_slice_ptr> in) {
+      VAST_DEBUG(self, "got a new source");
+      return self->state.stage->add_inbound_path(in);
+    },
+    // TODO: reinstate status handling
+    // [=](atom::status) -> caf::config_value::dictionary {
+    //   return self->state.status();
+    // },
+    [=](atom::subscribe, atom::flush, [[maybe_unused]] caf::actor& listener) {
+      // FIXME!
+      // self->state.add_flush_listener(std::move(listener));
+    }
+  };
 }
 
 } // namespace v2
