@@ -34,6 +34,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "caf/response_promise.hpp"
+
 namespace vast::system {
 
 namespace v2 {
@@ -51,7 +53,6 @@ struct active_partition_state {
   /// The UUID of the partition.
   uuid id;
 };
-
 
 /// The state of the index actor.
 struct index_state {
@@ -110,7 +111,8 @@ struct index_state {
   caf::actor next_worker();
 
   /// Prepares a subset of partitions from the lookup_state for evaluation.
-  pending_query_map
+  // pending_query_map
+  caf::response_promise
   build_query_map(query_state& lookup, uint32_t num_partitions);
 
   /// Spawns one evaluator for each partition.
@@ -120,21 +122,32 @@ struct index_state {
 
   // -- data members ----------------------------------------------------------
 
+  /// Pointer to the parent actor.
   caf::stateful_actor<index_state>* self;
 
   /// The streaming stage.
   index_stream_stage_ptr stage;
 
+  /// Allows the index to multiplex between waiting for ready workers and
+  /// queries.
+  caf::behavior has_worker;
+
   /// The single active (read/write) partition.
   active_partition_state active_partition = {};
 
   /// Partitions that are currently in the process of persisting.
+  /// TODO: An alternative to keeping an explicit set of unpersisted partitions
+  /// would be to add functionality to the LRU cache to "pin" certain items.
+  /// Then (assuming the query interface for both types of partition stays
+  /// identical) we could just use the same cache for unpersisted partitions and
+  /// unpin them after they're safely on disk.
   std::unordered_map<uuid, caf::actor> unpersisted;
 
   /// The set of passive (read-only) partitions.
   partition_cache_type lru_partitions;
 
-  // The set of partitions that exist on disk. TODO: not sure if we even need this
+  /// The set of partitions that exist on disk.
+  /// TODO: not sure if we even need this
   std::vector<uuid> persisted_partitions;
 
   /// The maximum number of events that a partition can hold.
@@ -165,7 +178,7 @@ struct index_state {
 /// @pre `partition_capacity > 0
 caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
                     size_t partition_capacity, size_t in_mem_partitions,
-                    size_t taste_partitions);
+                    size_t taste_partitions, size_t num_workers);
 
 } // namespace v2
 

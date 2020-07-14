@@ -22,6 +22,7 @@
 #include "vast/concept/printable/vast/uuid.hpp"
 #include "vast/detail/assert.hpp"
 #include "vast/event.hpp"
+#include "vast/expression.hpp"
 #include "vast/expression_visitors.hpp"
 #include "vast/fbs/partition.hpp"
 #include "vast/fbs/utils.hpp"
@@ -58,6 +59,60 @@ namespace vast::system {
 
 namespace v2 {
 
+caf::actor
+partition_state::fetch_indexer(const data_extractor& dx,
+                               [[maybe_unused]] relational_operator op,
+                               [[maybe_unused]] const data& x) {
+  VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
+  // Sanity check.
+  if (dx.offset.empty())
+    return nullptr;
+  auto& r = caf::get<record_type>(dx.type);
+  auto k = r.resolve(dx.offset);
+  VAST_ASSERT(k);
+  auto index = r.flat_index_at(dx.offset);
+  if (!index) {
+    VAST_DEBUG(self, "got invalid offset for record type", dx.type);
+    return nullptr;
+  }
+  return indexer_at(*index);
+}
+
+caf::actor
+partition_state::fetch_indexer(const attribute_extractor& ex,
+                               relational_operator op, const data& x) {
+  VAST_TRACE(VAST_ARG(ex), VAST_ARG(op), VAST_ARG(x));
+  if (ex.attr == atom::type_v) {
+    // We know the answer immediately: all IDs that are part of the table.
+    // However, we still have to "lift" this result into an actor for the
+    // EVALUATOR.
+    ids row_ids;
+    for (auto& [name, ids] : type_ids)
+      if (evaluate(name, op, x))
+        row_ids |= ids;
+    // TODO: Spawning a one-shot actor is quite expensive. Maybe the
+    //       partition could instead maintain this actor lazily.
+    return self->spawn([row_ids]() -> caf::behavior {
+      return [=](const curried_predicate&) { return row_ids; };
+    });
+  }
+  VAST_WARNING(self, "got unsupported attribute:", ex.attr);
+  return nullptr;
+}
+
+caf::actor& partition_state::indexer_at(size_t position) {
+  // VAST_ASSERT(position < indexers_.size());
+  // auto& [fqf, ip] = as_vector(indexers_)[position];
+  // if (!ip.indexer) {
+  //   ip.indexer
+  //     = state().make_indexer(column_file(fqf), fqf.type, id(), fqf.fqn());
+  //   VAST_ASSERT(ip.indexer != nullptr);
+  // }
+  // return ip.indexer;
+  VAST_INFO(self, "dying");
+  vast::die("fixme!");
+}
+
 bool partition_selector::operator()(const vast::qualified_record_field& filter,
                                     const table_slice_column& x) const {
   auto& layout = x.slice->layout();
@@ -66,6 +121,7 @@ bool partition_selector::operator()(const vast::qualified_record_field& filter,
 }
 
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
+  self->state.self = self;
   self->state.name = "partition-" + to_string(id);
   self->state.partition_uuid = id;
   self->state.offset = vast::invalid_id;
@@ -81,19 +137,28 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         table_slice_ptr x) {
       VAST_DEBUG(self, "got new table slice", to_string(*x));
       // We rely on `invalid_id` being actually being the highest possible id
-      // here.
+      // when using `min()` below.
       VAST_ASSERT(vast::invalid_id == std::numeric_limits<vast::id>::max());
+      auto first = x->offset();
+      auto last = x->offset() + x->rows();
+      auto it
+        = self->state.type_ids.emplace(x->layout().name(), vast::ids{}).first;
+      auto& ids = it->second;
+      VAST_ASSERT(first >= ids.size());
+      ids.append_bits(false, first - ids.size());
+      ids.append_bits(true, last - first);
       self->state.offset = std::min(x->offset(), self->state.offset);
       self->state.events += x->rows();
       size_t col = 0;
       for (auto& field : x->layout().fields) {
-        auto fqf = qualified_record_field{x->layout().name(), field};
-        auto& idx = self->state.indexers[fqf];
+        auto qf = qualified_record_field{x->layout().name(), field};
+        auto& idx = self->state.indexers[qf];
         if (!idx) {
+          self->state.layout.fields.push_back(as_record_field(qf));
           // FIXME: properly initialize settings
           idx = self->spawn(indexer, field.type, caf::settings{});
           auto slot = self->state.stage->add_outbound_path(idx);
-          self->state.stage->out().set_filter(slot, fqf);
+          self->state.stage->out().set_filter(slot, qf);
           VAST_DEBUG(self, "spawned new indexer for field", field.name,
                      "at slot", slot);
         }
@@ -140,7 +205,6 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         st.persistence_promise = self->make_response_promise();
       st.persist_path = part_dir;
       st.persisted_indexers = 0;
-
       // Wait for outstanding data to avoid data loss.
       // TODO: Maybe a more elegant design would be to send a, say,
       // `persist_stage2` atom when finalizing the stream, but then the case
@@ -178,7 +242,9 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       fbs::PartitionBuilder partition_builder(builder);
       auto uuid = pack(builder, self->state.partition_uuid);
       if (!uuid) {
-        VAST_ERROR(self, "cant flatpack uuid", uuid.error());
+        VAST_ERROR(self,
+                   "encountered error with flatpack serialization of uuid",
+                   self->state.partition_uuid, uuid.error());
         return; // FIXME: send error message
       }
       partition_builder.add_uuid(*uuid);
@@ -215,7 +281,40 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       self->state.persistence_promise.delegate(
         fs, atom::write_v, *self->state.persist_path, fbchunk);
       return; // FIXME: send error message
-    }};
+    },
+    [=](atom::evaluate, const expression& expr) {
+      evaluation_triples result;
+      VAST_INFO(self, "evaluating expression", expr);
+      // Pretend the partition is a table, and return fitted predicates for the
+      // partitions layout.
+      auto resolved = resolve(expr, self->state.layout);
+      for (auto& kvp : resolved) {
+        // For each fitted predicate, look up the corresponding INDEXER
+        // according to the specified type of extractor.
+        auto& pred = kvp.second;
+        auto get_indexer_handle = [&](const auto& ext, const data& x) {
+          return self->state.fetch_indexer(ext, pred.op, x);
+        };
+        auto v = detail::overload(
+          [&](const attribute_extractor& ex, const data& x) {
+            return get_indexer_handle(ex, x);
+          },
+          [&](const data_extractor& dx, const data& x) {
+            return get_indexer_handle(dx, x);
+          },
+          [](const auto&, const auto&) {
+            return caf::actor{}; // clang-format fix
+          });
+        // Package the predicate, its position in the query and the required
+        // INDEXER as a "job description".
+        if (auto hdl = caf::visit(v, pred.lhs, pred.rhs))
+          result.emplace_back(kvp.first, curried(pred), std::move(hdl));
+      }
+      // Return the list of jobs, to be used by the EVALUATOR.
+      VAST_INFO(self, "result is", result);
+      return result;
+    },
+  };
 }
 
 caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
