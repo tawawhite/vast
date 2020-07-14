@@ -134,7 +134,7 @@ explorer(caf::stateful_actor<explorer_state>* self, caf::actor node,
         VAST_DEBUG(self, "could not find timestamp field in", layout);
         return;
       }
-      std::optional<table_slice::column_view> by_column;
+      std::optional<table_slice_column_view> by_column;
       if (st.by) {
         // Need to pivot from caf::optional to std::optional here, as the
         // former doesnt support emplace or value assignment.

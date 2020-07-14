@@ -26,7 +26,10 @@
 #include "vast/format/test.hpp"
 #include "vast/logger.hpp"
 #include "vast/table_slice_builder.hpp"
+#include "vast/table_slice_builder_factory.hpp"
+#include "vast/table_slice_column_view.hpp"
 #include "vast/table_slice_factory.hpp"
+#include "vast/table_slice_row_view.hpp"
 #include "vast/value.hpp"
 #include "vast/value_index.hpp"
 
@@ -43,50 +46,32 @@
 
 #include <unordered_map>
 
-#include <vast/table_slice_builder_factory.hpp>
-
 namespace vast {
 
 namespace {
 
 using size_type = table_slice::size_type;
 
-auto cap (size_type pos, size_type num, size_type last) {
+auto cap(size_type pos, size_type num, size_type last) {
   return num == table_slice::npos ? last : std::min(last, pos + num);
 }
 
 } // namespace <anonymous>
 
-table_slice::column_view::column_view(const table_slice& slice, size_t column)
-  : slice_(slice), column_(column) {
-  // nop
-}
-
-data_view table_slice::column_view::operator[](size_t row) const {
-  VAST_ASSERT(row < rows());
-  return slice_.at(row, column_);
-}
-
-table_slice::row_view::row_view(const table_slice& slice, size_t row)
-  : slice_(slice), row_(row) {
-  // nop
-}
-
-data_view table_slice::row_view::operator[](size_t column) const {
-  VAST_ASSERT(column < columns());
-  return slice_.at(row_, column);
-}
-
 table_slice::table_slice(table_slice_header header)
   : header_{std::move(header)} {
-  ++instance_count_;
+  ++num_instances_;
+}
+
+table_slice::table_slice(const table_slice& other)
+  : table_slice{other.header()} {
+  // nop
 }
 
 table_slice::~table_slice() {
-  --instance_count_;
+  VAST_ASSERT(num_instances_ > 0);
+  --num_instances_;
 }
-
-std::atomic<size_t> table_slice::instance_count_{0u};
 
 record_type table_slice::layout(size_type first_column,
                                 size_type num_columns) const {
@@ -99,22 +84,22 @@ record_type table_slice::layout(size_type first_column,
   return record_type{std::move(sub_records)};
 }
 
-table_slice::row_view table_slice::row(size_t index) const {
+table_slice_row_view table_slice::row(size_t index) const {
   VAST_ASSERT(index < rows());
   return {*this, index};
 }
 
-table_slice::column_view table_slice::column(size_t index) const {
+table_slice_column_view table_slice::column(size_t index) const {
   VAST_ASSERT(index < columns());
   return {*this, index};
 }
 
-caf::optional<table_slice::column_view>
+caf::optional<table_slice_column_view>
 table_slice::column(std::string_view name) const {
   auto& fields = header_.layout.fields;
   for (size_t index = 0; index < fields.size(); ++index)
     if (fields[index].name == name)
-      return column_view{*this, index};
+      return table_slice_column_view{*this, index};
   return caf::none;
 }
 

@@ -198,6 +198,8 @@ set(libvast_sources
     src/table_slice.cpp
     src/table_slice_builder.cpp
     src/table_slice_builder_factory.cpp
+    src/table_slice_column_view.cpp
+    src/table_slice_row_view.cpp
     src/table_slice_factory.cpp
     src/time.cpp
     src/time_synopsis.cpp

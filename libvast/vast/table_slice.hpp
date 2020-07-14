@@ -15,7 +15,9 @@
 
 #include "vast/fbs/table_slice.hpp"
 #include "vast/fwd.hpp"
+#include "vast/table_slice_column_view.hpp"
 #include "vast/table_slice_header.hpp"
+#include "vast/table_slice_row_view.hpp"
 #include "vast/type.hpp"
 #include "vast/view.hpp"
 
@@ -35,79 +37,27 @@ namespace vast {
 class table_slice : public caf::ref_counted {
 public:
   // -- member types -----------------------------------------------------------
-
   using size_type = uint64_t;
 
   static constexpr size_type npos = std::numeric_limits<size_type>::max();
-
-  /// Convenience helper for traversing a column.
-  class column_view {
-  public:
-    column_view(const table_slice& slice, size_t column);
-
-    /// @returns the data at given row.
-    data_view operator[](size_t row) const;
-
-    /// @returns the number of rows in the slice.
-    size_t rows() const noexcept {
-      return slice_.rows();
-    }
-
-    /// @returns the viewed table slice.
-    const table_slice& slice() const noexcept {
-      return slice_;
-    }
-
-    /// @returns the viewed column.
-    size_t column() const noexcept {
-      return column_;
-    }
-
-  private:
-    const table_slice& slice_;
-    size_t column_;
-  };
-
-  /// Convenience helper for traversing a row.
-  class row_view {
-  public:
-    row_view(const table_slice& slice, size_t row);
-
-    /// @returns the data at given column.
-    data_view operator[](size_t column) const;
-
-    /// @returns the number of columns in the slice.
-    size_t columns() const noexcept {
-      return slice_.columns();
-    }
-
-    /// @returns the viewed table slice.
-    const table_slice& slice() const noexcept {
-      return slice_;
-    }
-
-    /// @returns the viewed row.
-    size_t row() const noexcept {
-      return row_;
-    }
-
-  private:
-    const table_slice& slice_;
-    size_t row_;
-  };
 
   // -- constructors, destructors, and assignment operators --------------------
 
   ~table_slice() override;
 
-  table_slice(const table_slice&) = default;
-
-  /// Default-constructs an empty table slice.
-  table_slice() = default;
-
   /// Constructs a table slice from a header.
   /// @param header The header of the table slice.
   explicit table_slice(table_slice_header header = {});
+
+  /// Copy-constructs a table slice.
+  /// @param other The table slice to copy.
+  table_slice(const table_slice& other);
+
+  // Forbid other means of construction.
+  table_slice() = delete;
+  table_slice& operator=(const table_slice&) = delete;
+  table_slice(table_slice&&) = delete;
+  table_slice& operator=(table_slice&&) = delete;
 
   /// Makes a copy of this slice.
   virtual table_slice* copy() const = 0;
@@ -161,7 +111,7 @@ public:
 
   /// @returns a row view for the given `index`.
   /// @pre `row < rows()`
-  row_view row(size_t index) const;
+  table_slice_row_view row(size_t index) const;
 
   /// @returns the number of rows in the slice.
   size_type columns() const noexcept {
@@ -170,11 +120,11 @@ public:
 
   /// @returns a column view for the given `index`.
   /// @pre `column < columns()`
-  column_view column(size_t index) const;
+  table_slice_column_view column(size_t index) const;
 
   /// @returns a view for the column with given `name` on success, or `none` if
   ///          no column matches the `name`.
-  caf::optional<column_view> column(std::string_view name) const;
+  caf::optional<table_slice_column_view> column(std::string_view name) const;
 
   /// @returns the offset in the ID space.
   id offset() const noexcept {
@@ -199,7 +149,7 @@ public:
   virtual data_view at(size_type row, size_type col) const = 0;
 
   static int instances() {
-    return instance_count_;
+    return num_instances_;
   }
 
 protected:
@@ -208,7 +158,7 @@ protected:
   table_slice_header header_;
 
 private:
-  static std::atomic<size_t> instance_count_;
+  inline static std::atomic<size_t> num_instances_ = 0;
 };
 
 // -- free functions -----------------------------------------------------------

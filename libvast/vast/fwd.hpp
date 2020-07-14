@@ -58,6 +58,8 @@ class subnet;
 class synopsis;
 class table_slice;
 class table_slice_builder;
+class table_slice_column_view;
+class table_slice_row_view;
 class type;
 class uuid;
 class value;
