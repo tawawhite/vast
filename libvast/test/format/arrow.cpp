@@ -85,7 +85,7 @@ TEST(arrow batch) {
     REQUIRE_LESS(slice_id, zeek_conn_log_slices.size());
     table_slice_header hdr{layout, zeek_conn_log_slices[slice_id]->rows(),
                            zeek_conn_log_slices[slice_id]->offset()};
-    CHECK_EQUAL(detail::narrow<size_t>(batch->num_rows()), hdr.rows);
+    CHECK_EQUAL(detail::narrow<size_t>(batch->num_rows()), hdr.num_rows);
     CHECK(batch->schema()->Equals(*arrow_schema));
     auto slice = caf::make_counted<arrow_table_slice>(std::move(hdr), batch);
     CHECK_EQUAL(*slice, *zeek_conn_log_slices[slice_id]);

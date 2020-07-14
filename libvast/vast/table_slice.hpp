@@ -156,7 +156,7 @@ public:
 
   /// @returns the number of rows in the slice.
   size_type rows() const noexcept {
-    return header_.rows;
+    return header_.num_rows;
   }
 
   /// @returns a row view for the given `index`.

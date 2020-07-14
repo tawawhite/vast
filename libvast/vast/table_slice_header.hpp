@@ -24,13 +24,13 @@ namespace vast {
 /// @relates table_slice
 struct table_slice_header {
   record_type layout = {}; ///< The flattened layout of the data.
-  uint64_t rows = 0;       ///< The number of events (= rows).
+  uint64_t num_rows = 0;   ///< The number of events (= rows).
   id offset = 0;           ///< The offset in the 2^64 ID event space.
 
   /// Type inspection support for CAF.
   template <class Inspector>
   friend auto inspect(Inspector& f, table_slice_header& x) {
-    return f(caf::meta::type_name("table_slice_header"), x.layout, x.rows,
+    return f(caf::meta::type_name("table_slice_header"), x.layout, x.num_rows,
              x.offset);
   }
 };

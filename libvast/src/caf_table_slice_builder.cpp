@@ -56,7 +56,7 @@ table_slice_ptr caf_table_slice_builder::finish() {
   if (col_ != 0)
     slice_->xs_.push_back(std::move(row_));
   // Populate slice.
-  slice_->header_.rows = slice_->xs_.size();
+  slice_->header_.num_rows = slice_->xs_.size();
   return table_slice_ptr{slice_.release(), false};
 }
 
