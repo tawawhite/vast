@@ -70,6 +70,13 @@ using namespace std::chrono;
 //                                                                                ...
 // clang-format on
 
+CAF_BEGIN_TYPE_ID_BLOCK(idx, caf::first_custom_type_id + 20000)
+
+CAF_ADD_ATOM(idx, idx::atom, expression_stage2, "xpr_stage2")
+CAF_ADD_ATOM(idx, idx::atom, query_stage2, "qry_stage2")
+
+CAF_END_TYPE_ID_BLOCK(idx)
+
 namespace vast::system {
 
 namespace v2 {
@@ -140,12 +147,11 @@ caf::actor index_state::next_worker() {
   return result;
 }
 
-// FIXME: Use caf::typed_response_promise<index_state::pending_query_map>
-caf::response_promise
-index_state::build_query_map(query_state& lookup, uint32_t num_partitions) {
+void
+index_state::request_query_map(query_state& lookup, uint32_t num_partitions) {
   VAST_TRACE(VAST_ARG(lookup), VAST_ARG(num_partitions));
   if (num_partitions == 0 || lookup.partitions.empty())
-    return {};
+    return;
   // Prefer partitions that are already available in RAM.
   std::partition(lookup.partitions.begin(), lookup.partitions.end(),
                  [&](const uuid& candidate) {
@@ -154,27 +160,8 @@ index_state::build_query_map(query_state& lookup, uint32_t num_partitions) {
                           || unpersisted.count(candidate)
                           || lru_partitions.contains(candidate);
                  });
-  // Maps partition IDs to the EVALUATOR actors we are going to spawn.
-  pending_query_map result;
-  // TODO: This construction is a bit crazy, its essentially a workaround for
-  // CAFs handling of futures and continuations. When calling `.await()` on a
-  // non-blocking actor, execution is not suspended but continues until the end
-  // of the current message handler. All calls to `.await()` are put on a stack
-  // and are then executed in reverse order. Since we have to wait for the
-  // evaluation triples from all partitions before the final `pending_query_map`
-  // can be constructed, we use this temporary state so we can keep track of
-  // how many calls to `await()` are still outstanding.
-  // There might be a better way built into CAF to do this.
-  auto promise = self->make_response_promise<pending_query_map>();
-  struct query_map_construction_state {
-    size_t total = 0;
-    size_t completed = 0;
-    pending_query_map map;
-    caf::response_promise promise;
-  };
-  auto construction_state = std::make_shared<query_map_construction_state>();
   // Helper function to spin up EVALUATOR actors for a single partition.
-  auto spin_up = [&, construction_state](const uuid& partition_id) {
+  auto spin_up = [&](const uuid& partition_id) {
     // We need to first check whether the ID is the active partition or one
     // of our unpersisted ones. Only then can we dispatch to our LRU cache.
     caf::actor part;
@@ -188,45 +175,42 @@ index_state::build_query_map(query_state& lookup, uint32_t num_partitions) {
       // the caller.
       part = lru_partitions.get_or_load(partition_id);
     if (!part) {
-      VAST_ERROR("Could not load partition", partition_id,
-                 "that was part of a query id");
-      return;
+      VAST_ERROR("Could not load partition", partition_id, "that was part of a query id");
+      return false;
     }
-    evaluation_triples eval;
-    self->request(part, caf::infinite, atom::evaluate_v, lookup.expression)
-      .then(
-        [&](evaluation_triples triples) {
-          VAST_INFO(self, "got triples", triples);
-          eval = std::move(triples);
-          if (!eval.empty())
-            construction_state->map.emplace(partition_id, std::move(eval));
-          else
-            VAST_DEBUG(self, "identified partition", partition_id,
-                       "as candidate in the meta index, but it didn't produce "
-                       "an "
-                       "evaluation map");
-          construction_state->completed++;
-          if (construction_state->completed == construction_state->total)
-            construction_state->promise.deliver(
-              std::move(construction_state->map));
-        },
-        [&](const caf::error& error) {
-          VAST_ERROR(self, "oh no :(", error); // FIXME
-        });
+    // FIXME: send all requests before blocking on the responses
+    self->request(part, caf::infinite, atom::evaluate_v, lookup.expression).await(
+      [&](evaluation_triples triples) {
+        if (triples.empty()) {
+          VAST_DEBUG(self, "identified partition", partition_id,
+                     "as candidate in the meta index, but it didn't produce an "
+                     "evaluation map");
+          return;
+        }
+        lookup.pqm.emplace(partition_id, std::move(triples));
+      },
+      [&](const caf::error& error) { VAST_ERROR("oh no :(", error); }); // FIXME
+    return true;
   };
   // Loop over the candidate set until we either successfully scheduled
   // num_partitions partitions or run out of candidates.
-  VAST_INFO(self, "looking up", lookup.partitions);
+  //
+  // TODO: The previous code immediately discarded partitions that were
+  // selected by the meta index but didnt produce an evaluation map, so
+  // that they didn't count towards the minimum. This is kinda hard to
+  // replicate in the new asynchronous scenario, but if it turns out to
+  // be relevant to performance we might need to reinstate it.
+  size_t launched = 0;
   {
-    auto i = lookup.partitions.begin();
+    auto it = lookup.partitions.begin();
     auto last = lookup.partitions.end();
-    for (; i != last && result.size() < num_partitions; ++i)
-      spin_up(*i);
-    auto total = std::distance(lookup.partitions.begin(), i);
-    lookup.partitions.erase(lookup.partitions.begin(), i);
-    construction_state->total = total;
+    auto count = std::min<size_t>(std::distance(it, last), num_partitions);
+    for (size_t i=0; i < count; ++i)
+      launched += spin_up(*it++);
+    lookup.partitions.erase(lookup.partitions.begin(), it);
   }
-  return construction_state->promise;
+  VAST_DEBUG(self, "launched", launched, "await handlers to fill the pending query map");
+  return;
 }
 
 query_map
@@ -411,31 +395,51 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
       }
       // Allows the client to query further results after initial taste.
       auto query_id = uuid::random();
-      auto lookup
-        = index_state::query_state{query_id, expr, std::move(candidates)};
-      auto pqm = st.build_query_map(lookup, st.taste_partitions);
-      // pqm.
+      auto lookup = index_state::query_state{query_id, expr, std::move(candidates), index_state::pending_query_map{}};
+      auto result = st.pending.emplace(lookup.id, std::move(lookup));
+      VAST_ASSERT(result.second);
+      auto& inserted_lookup = result.first->second;
+      st.request_query_map(inserted_lookup, st.taste_partitions);
+      // "Yield" the current function.
+      self->delegate(caf::actor_cast<caf::actor>(self), idx::atom::expression_stage2_v, expr, inserted_lookup.id, client);
+    },
+    // The `.await()` handlers that are added to this actor in `build_query_map()` are
+    // running as soon as the current coroutine is suspended, so in between the above
+    // handler and the "stage2" handler below. So the query map is filled with the
+    // responses from all the selected partitions when we enter the function below.
+    [=](idx::atom::expression_stage2, vast::expression expr, uuid query_id, caf::actor client) {
+      auto& st = self->state;
+      // TODO: Can it happen that `st.pending[query_id]` was modified in between the two steps?
+      auto it = st.pending.find(query_id);
+      if (it == st.pending.end()) {
+        VAST_ERROR(self, "ignoring continuation for query", query_id, "which doesnt exist");
+        return;
+      }
+      auto& lookup = it->second;
+      auto& pqm = lookup.pqm;
+      // TODO: Does this still work after `delegate()`? Also, why exactly is it necessary?
+      auto respond = [&](auto&&... xs) {
+        auto mid = self->current_message_id();
+        unsafe_response(self, self->current_sender(), {}, mid.response_id(),
+                        std::forward<decltype(xs)>(xs)...);
+      };
       if (pqm.empty()) {
         VAST_ASSERT(lookup.partitions.empty());
         VAST_DEBUG(self, "returns without result: no partitions qualify");
-        no_result();
+        respond(uuid::nil(), uint32_t{0}, uint32_t{0});
+        self->send(client, atom::done_v);
         return;
       }
       auto hits = pqm.size() + lookup.partitions.size();
       auto scheduling = std::min(taste_partitions, hits);
       // Notify the client that we don't have more hits.
       if (scheduling == hits)
-        query_id = uuid::nil();
-      respond(query_id, detail::narrow<uint32_t>(hits),
+        lookup.id = uuid::nil();
+      respond(lookup.id, detail::narrow<uint32_t>(hits),
               detail::narrow<uint32_t>(scheduling));
       auto qm = st.launch_evaluators(pqm, expr);
       VAST_DEBUG(self, "scheduled", qm.size(), "/", hits,
                  "partitions for query", expr);
-      if (!lookup.partitions.empty()) {
-        [[maybe_unused]] auto result
-          = st.pending.emplace(query_id, std::move(lookup));
-        VAST_ASSERT(result.second);
-      }
       // Delegate to query supervisor (uses up this worker) and report
       // query ID + some stats to the client.
       VAST_INFO(self, "has", st.idle_workers.size(), "idle workers");
@@ -463,7 +467,15 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
         self->send(client, atom::done_v);
         return;
       }
-      auto pqm = st.build_query_map(iter->second, num_partitions);
+      st.request_query_map(iter->second, num_partitions);
+      self->delegate(caf::actor_cast<caf::actor>(self), idx::atom::query_stage2_v, query_id, client);
+    },
+    // See also comment above `expression_stage2` handler.
+    [=](idx::atom::query_stage2, uuid query_id, caf::actor client) {
+      auto& st = self->state;
+      // TODO: Is it better to pass the query_state that was looked up in stage1 directly
+      auto iter = st.pending.find(query_id);
+      auto& pqm = iter->second.pqm;
       if (pqm.empty()) {
         VAST_ASSERT(iter->second.partitions.empty());
         st.pending.erase(iter);
@@ -798,8 +810,7 @@ partition* index_state::find_unpersisted(const uuid& id) {
   return i != unpersisted.end() ? i->first.get() : nullptr;
 }
 
-index_state::pending_query_map
-index_state::build_query_map(lookup_state& lookup, uint32_t num_partitions) {
+index_state::pending_query_map index_state::build_query_map(lookup_state& lookup, uint32_t num_partitions) {
   VAST_TRACE(VAST_ARG(lookup), VAST_ARG(num_partitions));
   if (num_partitions == 0 || lookup.partitions.empty())
     return {};

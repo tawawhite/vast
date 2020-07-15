@@ -60,6 +60,8 @@ struct index_state {
     = caf::stream_stage_ptr<table_slice_ptr,
                             caf::broadcast_downstream_manager<table_slice_ptr>>;
 
+  using pending_query_map = detail::stable_map<uuid, evaluation_triples>;
+
   // equivalent of lookup_state in the old index
   struct query_state {
     /// The UUID of the query.
@@ -73,6 +75,9 @@ struct index_state {
 
     /// Unscheduled partitions.
     std::vector<uuid> partitions;
+
+// Maps partition IDs to the EVALUATOR actors we are going to spawn.
+    pending_query_map pqm;
   };
 
   /// Loads partitions from disk by UUID.
@@ -92,7 +97,6 @@ struct index_state {
   using partition_cache_type
     = detail::lru_cache<uuid, caf::actor, partition_factory>;
 
-  using pending_query_map = detail::stable_map<uuid, evaluation_triples>;
 
   explicit index_state(caf::stateful_actor<index_state>* self);
 
@@ -111,9 +115,10 @@ struct index_state {
   caf::actor next_worker();
 
   /// Prepares a subset of partitions from the lookup_state for evaluation.
-  // pending_query_map
-  caf::response_promise
-  build_query_map(query_state& lookup, uint32_t num_partitions);
+  // TODO: Give this a better name that makes it clear that this only launches
+  // await-handlers and the actual building happens after the function is
+  // completed.
+  void request_query_map(query_state& lookup, uint32_t num_partitions);
 
   /// Spawns one evaluator for each partition.
   /// @returns a query map for passing to INDEX workers over the spawned
