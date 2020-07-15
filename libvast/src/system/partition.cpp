@@ -100,17 +100,10 @@ partition_state::fetch_indexer(const attribute_extractor& ex,
   return nullptr;
 }
 
-caf::actor& partition_state::indexer_at(size_t position) {
-  // VAST_ASSERT(position < indexers_.size());
-  // auto& [fqf, ip] = as_vector(indexers_)[position];
-  // if (!ip.indexer) {
-  //   ip.indexer
-  //     = state().make_indexer(column_file(fqf), fqf.type, id(), fqf.fqn());
-  //   VAST_ASSERT(ip.indexer != nullptr);
-  // }
-  // return ip.indexer;
-  VAST_INFO(self, "dying");
-  vast::die("fixme!");
+caf::actor partition_state::indexer_at(size_t position) {
+  VAST_ASSERT(position < indexers.size());
+  auto& [_, indexer] = as_vector(indexers)[position];
+  return indexer;
 }
 
 bool partition_selector::operator()(const vast::qualified_record_field& filter,

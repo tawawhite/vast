@@ -78,6 +78,12 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
           self->quit(err);
         });
     },
+    // FIXME: Get rid of one of these handler, i think the bottom one is currently
+    // unused.
+    [=](const curried_predicate& pred) {
+      VAST_DEBUG(self, "got predicate:", pred);
+      return self->state.idx->lookup(pred.op, make_view(pred.rhs));
+    },
     [=](relational_operator op, const data_view& rhs) {
       VAST_DEBUG(self, "got query for:", op, to_string(rhs));
       return self->state.idx->lookup(op, rhs);
@@ -91,7 +97,10 @@ caf::behavior indexer(caf::stateful_actor<indexer_state>* self, type index_type,
       auto chunk = chunk::make(std::move(buf));
       auto sender = self->current_sender();
       self->send(receiver, atom::done_v, chunk);
-    }};
+    },
+      [=](atom::shutdown) {
+      self->quit(caf::exit_reason::user_shutdown); // clang-format fix
+    },};
 }
 
 } // namespace v2

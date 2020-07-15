@@ -52,7 +52,7 @@ struct partition_state {
   /// Member functions
 
   /// Gets the INDEXER at position in the layout.
-  caf::actor& indexer_at(size_t position);
+  caf::actor indexer_at(size_t position);
 
   /// Retrieves an INDEXER for a predicate with a data extractor.
   /// @param dx The extractor.
