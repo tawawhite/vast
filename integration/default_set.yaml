@@ -150,8 +150,6 @@ tests:
     tags: [server, import-export, table-slice-type, zeek]
     fixture: ServerTester
     steps:
-      - command: import -b --table-slice-type=caf zeek
-        input: data/zeek/conn.log.gz
       - command: import -b --table-slice-type=msgpack zeek
         input: data/zeek/conn.log.gz
       - command: count '#type == "zeek.conn"'
