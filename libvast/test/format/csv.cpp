@@ -19,9 +19,9 @@
 #include "vast/test/fixtures/events.hpp"
 #include "vast/test/test.hpp"
 
-#include "vast/caf_table_slice_builder.hpp"
 #include "vast/concept/parseable/to.hpp"
 #include "vast/concept/parseable/vast.hpp"
+#include "vast/defaults.hpp"
 
 #include <algorithm>
 
@@ -77,9 +77,8 @@ struct fixture : fixtures::deterministic_actor_system {
                                    size_t max_slice_size) {
     using reader_type = format::csv::reader;
     auto in = std::make_unique<std::istringstream>(std::string{data});
-    // FIXME: Use defaults::import::table_slice_type once this test suite is
-    // fixed for MessagePack-encoded table slices.
-    reader_type reader{caf_table_slice::class_id, options, std::move(in)};
+    reader_type reader{defaults::import::table_slice_type, options,
+                       std::move(in)};
     reader.schema(s);
     std::vector<table_slice_ptr> slices;
     auto add_slice = [&](table_slice_ptr ptr) {

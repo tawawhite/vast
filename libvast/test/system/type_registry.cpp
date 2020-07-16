@@ -7,11 +7,14 @@
 #include "vast/test/fixtures/actor_system_and_events.hpp"
 #include "vast/test/test.hpp"
 
-#include "vast/caf_table_slice_builder.hpp"
+#include "vast/defaults.hpp"
 #include "vast/detail/notifying_stream_manager.hpp"
 #include "vast/detail/spawn_container_source.hpp"
+#include "vast/fwd.hpp"
 #include "vast/system/exporter.hpp"
 #include "vast/system/importer.hpp"
+#include "vast/table_slice.hpp"
+#include "vast/table_slice_builder_factory.hpp"
 #include "vast/type.hpp"
 
 #include <caf/stateful_actor.hpp>
@@ -30,11 +33,11 @@ const vast::record_type mock_layout_a = vast::record_type{
 }.name("mock");
 
 vast::table_slice_ptr make_data_a(std::string a, vast::count b, vast::real c) {
-  vast::caf_table_slice_builder builder(mock_layout_a);
-  builder.append(a);
-  builder.append(b);
-  builder.append(c);
-  return builder.finish();
+  auto builder = factory<table_slice_builder>::make(
+    defaults::import::table_slice_type, mock_layout_a);
+  REQUIRE(builder);
+  REQUIRE(builder->add(a, b, c));
+  return builder->finish();
 }
 
 const vast::record_type mock_layout_b = vast::record_type{
@@ -46,12 +49,11 @@ const vast::record_type mock_layout_b = vast::record_type{
 
 vast::table_slice_ptr
 make_data_b(std::string a, vast::count b, vast::real c, std::string d) {
-  vast::caf_table_slice_builder builder(mock_layout_b);
-  builder.append(a);
-  builder.append(b);
-  builder.append(c);
-  builder.append(d);
-  return builder.finish();
+  auto builder = factory<table_slice_builder>::make(
+    defaults::import::table_slice_type, mock_layout_b);
+  REQUIRE(builder);
+  REQUIRE(builder->add(a, b, c, d));
+  return builder->finish();
 }
 
 } // namespace

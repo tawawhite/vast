@@ -16,11 +16,11 @@
 #include "vast/test/fixtures/dummy_index.hpp"
 #include "vast/test/test.hpp"
 
-#include "vast/caf_table_slice.hpp"
 #include "vast/concept/parseable/to.hpp"
 #include "vast/concept/parseable/vast/expression.hpp"
 #include "vast/concept/printable/to_string.hpp"
 #include "vast/concept/printable/vast/type.hpp"
+#include "vast/defaults.hpp"
 #include "vast/detail/overload.hpp"
 #include "vast/detail/spawn_container_source.hpp"
 #include "vast/event.hpp"
@@ -29,6 +29,7 @@
 #include "vast/system/indexer.hpp"
 #include "vast/system/partition.hpp"
 #include "vast/table_slice.hpp"
+#include "vast/table_slice_builder_factory.hpp"
 
 #include <caf/atom.hpp>
 #include <caf/behavior.hpp>
@@ -271,7 +272,14 @@ TEST_DISABLED(integer rows lookup) {
     integer_type col_type;
     record_type layout{{"value", col_type}};
     auto rows = make_rows(1, 2, 3, 1, 2, 3, 1, 2, 3);
-    ingest(caf_table_slice::make(layout, rows));
+    auto builder = factory<table_slice_builder>::make(
+      defaults::import::table_slice_type, layout);
+    REQUIRE(builder);
+    for (auto& row : rows)
+      REQUIRE(builder->add(row));
+    auto slices = builder->finish();
+    REQUIRE(slices);
+    ingest(slices);
     MESSAGE("verify partition content");
     auto res = [&](auto... args) { return make_ids({args...}, rows.size()); };
     CHECK_EQUAL(query(":int == +1"), res(0u, 3u, 6u));

@@ -13,7 +13,6 @@
 
 #include "fixtures/events.hpp"
 
-#include "vast/caf_table_slice_builder.hpp"
 #include "vast/concept/printable/to_string.hpp"
 #include "vast/concept/printable/vast/data.hpp"
 #include "vast/concept/printable/vast/event.hpp"
@@ -184,7 +183,8 @@ public:
     return caf::visit(
       detail::overload(
         [&](const record_type& rt) -> id_assigning_builder* {
-          id_assigning_builder tmp{caf_table_slice_builder::make(rt)};
+          id_assigning_builder tmp{factory<table_slice_builder>::make(
+            defaults::import::table_slice_type, rt)};
           return &(builders_.emplace(rt.name(), std::move(tmp)).first->second);
         },
         [&](const auto&) -> id_assigning_builder* {
