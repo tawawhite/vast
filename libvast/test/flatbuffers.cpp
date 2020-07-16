@@ -73,3 +73,8 @@ TEST(index roundtrip) {
   // TODO
   vast::system::v2::index_state state(/*self = */ nullptr);
 }
+
+TEST(partition roundtrip) {
+  // TODO
+  vast::system::v2::partition_state state;
+}

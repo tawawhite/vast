@@ -147,7 +147,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         auto qf = qualified_record_field{x->layout().name(), field};
         auto& idx = self->state.indexers[qf];
         if (!idx) {
-          self->state.layout.fields.push_back(as_record_field(qf));
+          self->state.combined_layout.fields.push_back(as_record_field(qf));
           // FIXME: properly initialize settings
           idx = self->spawn(indexer, field.type, caf::settings{});
           auto slot = self->state.stage->add_outbound_path(idx);
@@ -295,7 +295,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       VAST_INFO(self, "evaluating expression", expr);
       // Pretend the partition is a table, and return fitted predicates for the
       // partitions layout.
-      auto resolved = resolve(expr, self->state.layout);
+      auto resolved = resolve(expr, self->state.combined_layout);
       for (auto& kvp : resolved) {
         // For each fitted predicate, look up the corresponding INDEXER
         // according to the specified type of extractor.
@@ -325,11 +325,67 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   };
 }
 
+// TODO: Eventually we want to get rid of `partition_state` for read-only
+// partitions (or introduce a severely reduced readonly_partition_state) and
+// answer queries directly from the stored flatbuffer, without deserialization
+// step.
 caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
                                  uuid id, vast::chunk chunk) {
-  [[maybe_unused]] auto partition = fbs::GetPartition(chunk.data());
-  // FIXME: Add querying logic
-  return {[=] { return; }};
+  auto partition = fbs::GetPartition(chunk.data());
+  // FIXME: remove the use of asserts in this function and replace by error
+  // handling (since the chunk is loaded from disk and must be considered to
+  // be user input)
+  VAST_ASSERT(partition->uuid());
+  unpack(*partition->uuid(), self->state.partition_uuid);
+  VAST_ASSERT(id == self->state.partition_uuid);
+  self->state.events = partition->events();
+  self->state.offset = partition->offset();
+  // FIXME: Correctly unpack partition.
+  // for layout in layouts ...
+  // for index in indices ...
+  return {
+    [=](caf::stream<table_slice_ptr>) {
+      VAST_ASSERT(!"read-only partition can not receive new table slices");
+    },
+    [=](atom::persist, const path&) {
+      // Technically we could also return `ok` immediately.
+      VAST_ASSERT(!"read-only partition does not need to be persisted");
+    },
+    // FIXME: This handler is copied from the regular `partition()` behaviour,
+    // this should be unified into one function.
+    [=](atom::evaluate, const expression& expr) {
+      evaluation_triples result;
+      VAST_INFO(self, "evaluating expression", expr);
+      // Pretend the partition is a table, and return fitted predicates for the
+      // partitions layout.
+      auto resolved = resolve(expr, self->state.combined_layout);
+      for (auto& kvp : resolved) {
+        // For each fitted predicate, look up the corresponding INDEXER
+        // according to the specified type of extractor.
+        auto& pred = kvp.second;
+        auto get_indexer_handle = [&](const auto& ext, const data& x) {
+          return self->state.fetch_indexer(ext, pred.op, x);
+        };
+        auto v = detail::overload(
+          [&](const attribute_extractor& ex, const data& x) {
+            return get_indexer_handle(ex, x);
+          },
+          [&](const data_extractor& dx, const data& x) {
+            return get_indexer_handle(dx, x);
+          },
+          [](const auto&, const auto&) {
+            return caf::actor{}; // clang-format fix
+          });
+        // Package the predicate, its position in the query and the required
+        // INDEXER as a "job description".
+        if (auto hdl = caf::visit(v, pred.lhs, pred.rhs))
+          result.emplace_back(kvp.first, curried(pred), std::move(hdl));
+      }
+      // Return the list of jobs, to be used by the EVALUATOR.
+      VAST_INFO(self, "result is", result);
+      return result;
+    },
+  };
 }
 
 } // namespace v2

@@ -156,7 +156,13 @@ caf::error index_state::load_from_disk() {
       // FIXME: Check if the partition with that uuid actually exists on disk,
       // and throw it out with a warning if not. (this can easily happen e.g.
       // with a hard shutdown)
-      persisted_partitions.push_back(partition_uuid);
+      if (exists(dir / to_string(partition_uuid)))
+        persisted_partitions.push_back(partition_uuid);
+      else
+        // TODO: remove the uuid from the meta index
+        VAST_WARNING(self, "found partition", partition_uuid,
+                     "in the index state but not on disk. If the last shutdown "
+                     "was not clean, data may have been lost");
     }
   } else {
     VAST_WARNING(self, "found existing database dir", dir,
@@ -688,7 +694,6 @@ partition_ptr index_state::partition_factory::operator()(const uuid& id) const {
   VAST_ASSERT(std::none_of(st_->unpersisted.begin(), st_->unpersisted.end(),
                            [&](auto& kvp) { return kvp.first->id() == id; }));
   // Load partition from disk.
-  VAST_DEBUG(st_->self, "loads partition", id);
   VAST_DEBUG(st_->self, "loads partition", id);
   auto result = std::make_unique<partition>(st_, id, st_->max_partition_size);
   if (auto err = result->init())

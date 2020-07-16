@@ -80,7 +80,7 @@ struct partition_state {
   partition_stream_stage_ptr stage;
 
   /// The combined type of all columns of this partition
-  record_type layout;
+  record_type combined_layout;
 
   /// Maps qualified fields to indexer actors.
   //  TODO: Should we use the tsl map here for heterogenous key lookup?
@@ -115,6 +115,8 @@ struct partition_state {
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
 
 /// Spawns a read-only partition.
+/// TODO: Maybe we should just send the path here, then the actual loading of
+/// the chunk can be done asynchronously
 caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
                                  uuid id, vast::chunk chunk);
 
