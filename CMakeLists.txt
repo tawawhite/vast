@@ -683,14 +683,6 @@ if (NOT vast_is_subproject AND NOT TARGET configure)
   add_custom_target(configure COMMAND ${CMAKE_CURRENT_BINARY_DIR}/config.status)
 endif ()
 
-set(EXECUTABLE_OUTPUT_PATH
-    ${CMAKE_CURRENT_BINARY_DIR}/bin
-    CACHE PATH "Single directory for all executables")
-
-set(LIBRARY_OUTPUT_PATH
-    ${CMAKE_CURRENT_BINARY_DIR}/lib
-    CACHE PATH "Single directory for all libraries")
-
 if (VAST_HAVE_ARROW)
   set(REQUIREMENT_PYARROW "pip install pyarrow")
 endif ()
@@ -705,7 +697,7 @@ file(
      fi
      base_dir=\"${CMAKE_CURRENT_SOURCE_DIR}/integration\"
      env_dir=\"${CMAKE_CURRENT_BINARY_DIR}/integration_env\"
-     app=\"${EXECUTABLE_OUTPUT_PATH}/vast\"
+     app=\"$<TARGET_FILE:vast>\"
      set -e
      if [ ! -d \"$env_dir\" ]; then
        python3 -m venv \"$env_dir\"
