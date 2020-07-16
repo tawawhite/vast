@@ -108,6 +108,9 @@ struct index_state {
   /// Persists the state to disk.
   caf::error flush_to_disk();
 
+  path meta_index_filename() const;
+
+caf::error flush_meta_index();
   // -- query handling
 
   bool worker_available();

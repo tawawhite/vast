@@ -107,6 +107,8 @@ struct partition_state {
   std::map<caf::actor_id, vast::chunk_ptr> chunks;
 };
 
+// TODO: Use typed actors for the partition actors.
+
 /// Spawns a partition.
 /// @param self The partition actor.
 /// @param id The UUID of this partition.

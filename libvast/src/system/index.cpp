@@ -223,9 +223,45 @@ index_state::launch_evaluators(pending_query_map pqm, expression expr) {
   return result;
 }
 
+path index_state::meta_index_filename() const {
+  return dir / "meta";
+}
+
+caf::error index_state::flush_meta_index() {
+  VAST_VERBOSE(self, "writes meta index to", meta_index_filename());
+  auto flatbuf = fbs::wrap(meta_idx, fbs::file_identifier);
+  if (!flatbuf)
+    return flatbuf.error();
+  return io::write(meta_index_filename(), as_bytes(*flatbuf));
+}
+
 /// Persists the state to disk.
-caf::error flush_to_disk() {
-  return make_error(ec::unimplemented, "Not supported yet!");
+caf::error index_state::flush_to_disk() {
+  VAST_TRACE("");
+  auto flush_all = [this]() -> caf::error {
+    // Flush meta index to disk.
+    if (auto err = flush_meta_index())
+      return err;
+    // Flush statistics to disk.
+    // if (auto err = flush_statistics())
+    //   return err;
+    // Flush active partition.
+    // if (active != nullptr)
+    //   if (auto err = active->flush_to_disk())
+    //     return err;
+    // Flush all unpersisted partitions. This only writes the meta state of
+    // each partition. For actually writing the contents of each INDEXER we
+    // need to rely on messaging.
+    // for (auto& kvp : unpersisted)
+    //   if (auto err = kvp.first->flush_to_disk())
+    //     return err;
+    return caf::none;
+  };
+  if (auto err = flush_all()) {
+    VAST_ERROR(self, "failed to flush state:", self->system().render(err));
+    return err;
+  }
+  return caf::none;
 }
 
 caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
@@ -349,6 +385,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     // Terminate partition actors.
     VAST_DEBUG(self, "brings down", partitions.size(), "partitions");
     shutdown<policy::parallel>(self, std::move(partitions));
+    self->state.flush_to_disk();
   });
   // Launch workers for resolving queries.
   for (size_t i = 0; i < num_workers; ++i)
@@ -364,7 +401,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
     // The partition delegates the actual writing to the filesystem actor,
     // so we dont really get more information than a binary ok/not-ok here.
     [=](caf::result<atom::ok>) { VAST_VERBOSE(self, "persisted partition"); },
-    // QUERY HANDLING (copied from v1)
+    // Query handling
     [=](vast::expression expr) {
       auto respond = [&](auto&&... xs) {
         auto mid = self->current_message_id();
