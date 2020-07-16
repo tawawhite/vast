@@ -107,10 +107,8 @@ table_slices::table_slices() {
     // {"mam", map_type{bool_type{}, set_type{bool_type{}}}},
     // {"man", map_type{bool_type{}, map_type{count_type{}, bool_type{}}}},
   }.name("test");
-  // A bunch of empty vectors for testing combined types.
+  // A bunch of test data for nested type combinations.
   // clang-format off
-    // "[T, +7, 42, 4.2, 1337ms, 2018-12-24, \"foo\", /foo.*bar/, 127.0.0.1,"
-    // " 10.0.0.0/8, 80/tcp, [1, 2, 3], {T, F}, {1 -> T, 2 -> F, 3 -> T}"
   auto test_vectors = ""s
     + ", [T]"s // va
     + ", [+7]"s // vb
