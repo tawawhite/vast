@@ -179,6 +179,13 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->set_exit_handler([=](const caf::exit_msg& msg) {
     VAST_DEBUG(self, "received EXIT from", msg.source,
                "with reason:", msg.reason);
+    // Delay shutdown if we're currently in the process of persisting.
+    if (self->state.persistence_promise.pending()) {
+      VAST_INFO(self, "delaying partition shutdown because persistion is in "
+                      "progress");
+      self->delayed_send(self, std::chrono::milliseconds(50), msg);
+      return;
+    }
     self->state.stage->out().fan_out_flush();
     self->state.stage->out().force_emit_batches();
     self->state.stage->out().close();
@@ -194,7 +201,8 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
     },
     [=](atom::persist, const path& part_dir) {
       auto& st = self->state;
-      if (!st.persist_path) // FIXME: using persist_path as flag for initial call
+      // Using `source()` to check if the promise was already initialized.
+      if (!st.persistence_promise.source())
         st.persistence_promise = self->make_response_promise();
       st.persist_path = part_dir;
       st.persisted_indexers = 0;
@@ -208,6 +216,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         self->delayed_send(self, 50ms, atom::persist_v, part_dir);
         return;
       }
+      VAST_INFO(self, "sending `snapshot` to indexers");
       for (auto& kv : st.indexers) {
         self->send(kv.second, atom::snapshot_v,
                    caf::actor_cast<caf::actor>(self));
@@ -223,14 +232,27 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
         return;
       }
       auto sender = self->current_sender()->id();
-      VAST_DEBUG(self, "got chunk from", sender);
+      VAST_INFO(self, "got chunk from", sender); // FIXME: info -> debug
       // TODO: We technically dont need the `state.chunks` map, we can just put
       // the builder in the state and add new chunks as they arrive.
       self->state.chunks.emplace(sender, chunk);
       if (self->state.persisted_indexers < self->state.indexers.size())
         return;
       flatbuffers::FlatBufferBuilder builder;
-      fbs::PartitionBuilder partition_builder(builder);
+      std::vector<flatbuffers::Offset<fbs::ValueIndex>> indices;
+      for (const auto& kv : self->state.chunks) {
+        auto chunk = kv.second;
+        // TODO: Can we somehow get rid of this copy?
+        auto data = builder.CreateVector(
+          reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
+        auto type = builder.CreateString("FIXME");
+        fbs::ValueIndexBuilder vbuilder(builder);
+        vbuilder.add_type(type);
+        vbuilder.add_data(data);
+        auto vindex = vbuilder.Finish();
+        indices.push_back(vindex);
+      }
+      auto indexes = builder.CreateVector(indices);
       auto uuid = pack(builder, self->state.partition_uuid);
       if (!uuid) {
         VAST_ERROR(self,
@@ -238,19 +260,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
                    self->state.partition_uuid, uuid.error());
         return; // FIXME: send error message
       }
+      fbs::PartitionBuilder partition_builder(builder);
       partition_builder.add_uuid(*uuid);
       partition_builder.add_offset(self->state.offset);
       partition_builder.add_events(self->state.events);
-      for (const auto& kv : self->state.chunks) {
-        auto chunk = kv.second;
-        fbs::ValueIndexBuilder vbuilder(builder);
-        // TODO: Can we somehow get rid of this copy?
-        auto data = builder.CreateVector(
-          reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
-        auto type = builder.CreateString("FIXME");
-        vbuilder.add_type(type);
-        vbuilder.add_data(data);
-      }
+      partition_builder.add_indexes(indexes);
       auto partition = partition_builder.Finish();
       builder.Finish(partition);
       // Delegate I/O to filesystem actor.

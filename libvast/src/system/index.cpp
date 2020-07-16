@@ -67,7 +67,7 @@ using namespace std::chrono;
 
 // clang-format off
 //
-//            tableslice              tableslice                           table slice column
+//            table slice              table slice                           table slice column
 // importer ----------------> index ---------------> active partition ----------------------------> indexer1
 //                                                                    ----------------------------> indexer2
 //                                                                                ...
@@ -90,11 +90,12 @@ index_state::index_state(caf::stateful_actor<index_state>* self)
 
 caf::actor index_state::partition_factory::operator()(const uuid& id) const {
   // Load partition from disk.
-  VAST_DEBUG(st_->self, "loads partition", id);
   VAST_ASSERT(std::find(st_->persisted_partitions.begin(),
                         st_->persisted_partitions.end(), id)
               != st_->persisted_partitions.end());
   auto path = st_->dir / to_string(id);
+  VAST_INFO(st_->self, "loads partition", id, "from path",
+            path); // fixme: info -> debug
   // FIXME: Delegate I/O to filesystem actor.
   auto bytes = io::read(path);
   if (!bytes)
@@ -205,7 +206,7 @@ void index_state::request_query_map(query_state& lookup,
       part = lru_partitions.get_or_load(partition_id);
     if (!part) {
       VAST_ERROR("Could not load partition", partition_id,
-                 "that was part of a query id");
+                 "that was part of a query");
       return false;
     }
     // FIXME: send all requests before blocking on the responses
@@ -687,6 +688,7 @@ partition_ptr index_state::partition_factory::operator()(const uuid& id) const {
   VAST_ASSERT(std::none_of(st_->unpersisted.begin(), st_->unpersisted.end(),
                            [&](auto& kvp) { return kvp.first->id() == id; }));
   // Load partition from disk.
+  VAST_DEBUG(st_->self, "loads partition", id);
   VAST_DEBUG(st_->self, "loads partition", id);
   auto result = std::make_unique<partition>(st_, id, st_->max_partition_size);
   if (auto err = result->init())
