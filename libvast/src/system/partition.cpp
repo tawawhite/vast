@@ -224,13 +224,11 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       }
       auto sender = self->current_sender()->id();
       VAST_DEBUG(self, "got chunk from", sender);
-      // TODO: We probably dont need this map, we can just put the builder
-      // in the state and add stuff as it arrives.
+      // TODO: We technically dont need the `state.chunks` map, we can just put
+      // the builder in the state and add new chunks as they arrive.
       self->state.chunks.emplace(sender, chunk);
       if (self->state.persisted_indexers < self->state.indexers.size())
         return;
-      // TODO: get a snapshot from all indexers and stitch together into a
-      // single flatbuffer.
       flatbuffers::FlatBufferBuilder builder;
       fbs::PartitionBuilder partition_builder(builder);
       auto uuid = pack(builder, self->state.partition_uuid);
@@ -256,6 +254,7 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       auto partition = partition_builder.Finish();
       builder.Finish(partition);
       // Delegate I/O to filesystem actor.
+      // TODO: Store the actor handle in `state`.
       auto actor = self->system().registry().get(atom::filesystem_v);
       if (!actor) {
         VAST_ERROR(self, "cannot persist state; filesystem actor is "
@@ -265,7 +264,9 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       auto fs = caf::actor_cast<filesystem_type>(actor);
       VAST_ASSERT(self->state.persist_path);
       auto fb = builder.Release();
-      // TODO: the chunk constructor creates a shared_ptr
+      // TODO: This is duplicating code from one of the `chunk` constructors,
+      // but otoh its maybe better to be explicit that we're creating a shared
+      // pointer here.
       auto ys = std::make_shared<flatbuffers::DetachedBuffer>(std::move(fb));
       auto deleter = [=]() mutable { ys.reset(); };
       auto fbchunk = chunk::make(ys->size(), ys->data(), deleter);

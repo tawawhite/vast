@@ -76,7 +76,7 @@ struct index_state {
     /// Unscheduled partitions.
     std::vector<uuid> partitions;
 
-// Maps partition IDs to the EVALUATOR actors we are going to spawn.
+    // Maps partition IDs to the EVALUATOR actors we are going to spawn.
     pending_query_map pqm;
   };
 
@@ -93,24 +93,38 @@ struct index_state {
     index_state* st_;
   };
 
+  /// Accumulates statistics for a given layout.
+  struct layout_statistics {
+    uint64_t count; ///< Number of events indexed.
+  };
+
+  /// Accumulates statistics about indexed data.
+  struct statistics {
+    /// The number of events for a given layout.
+    std::unordered_map<std::string, layout_statistics> layouts;
+  };
+
   /// Stores partitions sorted by access frequency.
   using partition_cache_type
     = detail::lru_cache<uuid, caf::actor, partition_factory>;
-
 
   explicit index_state(caf::stateful_actor<index_state>* self);
 
   // -- persistence ------------------------------------------------------------
 
-  /// Loads the state from disk.
   caf::error load_from_disk();
 
-  /// Persists the state to disk.
   caf::error flush_to_disk();
 
-  path meta_index_filename() const;
+  // FIXME: Change these so they take `path` as basename.
+  path index_filename() const;
 
-caf::error flush_meta_index();
+  path statistics_filename() const;
+
+  caf::error flush_index();
+
+  caf::error flush_statistics();
+
   // -- query handling
 
   bool worker_available();
@@ -177,8 +191,23 @@ caf::error flush_meta_index();
   /// The directory for persistent state.
   path dir;
 
+  /// Statistics about processed data.
+  statistics stats;
+
   static inline const char* name = "index";
 };
+
+/// @relates index_state
+template <class Inspector>
+auto inspect(Inspector& f, index_state::layout_statistics& x) {
+  return f(x.count);
+}
+
+/// @relates index_state
+template <class Inspector>
+auto inspect(Inspector& f, index_state::statistics& x) {
+  return f(x.layouts);
+}
 
 /// Indexes events in horizontal partitions.
 /// @param dir The directory of the index.
