@@ -181,11 +181,13 @@ private:
   deleter_type deleter_;
 };
 
+// We need this template in order to be able to send chunks as messages,
+// but we never actually want to have to use it since it will only be invoked
+// if chunk messages would be sent over the network. And we only want to send
+// chunks around internally. So it is declared here but never defined, leading
+// to a linker error if its used.
+// TODO: Replace with a static assert.
 template <typename Inspector>
-// [[noreturn]]
 typename Inspector::return_type inspect(Inspector&, chunk&);
-// {
-//   vast::die("dont serialize chunks plz");
-// }
 
 } // namespace vast

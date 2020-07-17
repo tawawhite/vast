@@ -112,7 +112,7 @@ struct partition_state {
 // we want to eventually be able to use the on-disk state without
 // any intermediate deserialzation step, like yandex::mms or cap'n proto.
 struct readonly_partition_state {
-  // FIXME: Move these functions, together with `combined_layout` and  
+  // FIXME: Move these functions, together with `combined_layout` and
   caf::actor indexer_at(size_t position);
 
   caf::actor fetch_indexer(const data_extractor& dx, relational_operator op,
@@ -143,7 +143,8 @@ struct readonly_partition_state {
   size_t events;
 
   // Stores the deserialized indexers.
-  std::map<qualified_record_field, value_index> indexer_states;
+  // FIXME: `value_index*` is just a placeholder, use the correct type.
+  std::map<qualified_record_field, value_index*> indexer_states;
 
   /// Maps qualified fields to indexer actors.
   detail::stable_map<qualified_record_field, caf::actor> indexers;
@@ -156,7 +157,6 @@ pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);
 
 caf::error unpack(const fbs::Partition& x, readonly_partition_state& y);
 
-
 // TODO: Use typed actors for the partition actors.
 
 /// Spawns a partition.
@@ -167,8 +167,9 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id);
 /// Spawns a read-only partition.
 /// TODO: Maybe we should just send the path here, then the actual loading of
 /// the chunk can be done asynchronously
-caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
-                                 uuid id, vast::chunk chunk);
+caf::behavior
+readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
+                   vast::chunk chunk);
 
 } // namespace v2
 

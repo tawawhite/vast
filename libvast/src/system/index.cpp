@@ -85,7 +85,7 @@ namespace vast::system {
 namespace v2 {
 
 index_state::index_state(caf::stateful_actor<index_state>* self)
-  : self(self), lru_partitions(10, partition_factory{this}) {
+  : self(self), lru_partitions(0, partition_factory{this}) {
 }
 
 caf::actor index_state::partition_factory::operator()(const uuid& id) const {
@@ -104,7 +104,6 @@ caf::actor index_state::partition_factory::operator()(const uuid& id) const {
   if (!chunk)
     return nullptr;
   return st_->self->spawn(readonly_partition, id, *chunk);
-  ;
 }
 
 caf::error index_state::load_from_disk() {
@@ -159,7 +158,7 @@ caf::error index_state::load_from_disk() {
       if (exists(dir / to_string(partition_uuid)))
         persisted_partitions.push_back(partition_uuid);
       else
-        // TODO: remove the uuid from the meta index
+        // TODO: remove the problematic uuid from the meta index if we get here
         VAST_WARNING(self, "found partition", partition_uuid,
                      "in the index state but not on disk. If the last shutdown "
                      "was not clean, data may have been lost");
@@ -353,9 +352,7 @@ caf::behavior index(caf::stateful_actor<index_state>* self, path dir,
   if (auto err = self->state.load_from_disk()) {
     vast::die("Cannot load index state from disk, please try again or remove "
               "it to start with a clean state (after making a backup");
-    // return err;
   }
-  // FIXME: is it safe to just pass around a raw pointer here?
   self->state.lru_partitions.resize(in_mem_partitions);
   self->state.taste_partitions = taste_partitions;
   // Creates a new active partition and updates index state.

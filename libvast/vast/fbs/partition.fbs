@@ -30,10 +30,10 @@ table Partition {
   events: uint64;
 
   /// The available layouts in this partition.
-  layouts: [ubyte]; // TODO: use the layout type once availble
+  combined_layout: [ubyte]; // TODO: use the layout type once availble
 
   /// The contained value indexes.
-  indexes: [ValueIndex];
+  indexes: [QualifiedValueIndex];
 }
 
 root_type Partition;

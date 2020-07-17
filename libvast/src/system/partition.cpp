@@ -49,7 +49,13 @@
 #include <caf/make_counted.hpp>
 #include <caf/stateful_actor.hpp>
 
+#include "caf/actor_system.hpp"
+#include "caf/binary_deserializer.hpp"
+#include "caf/binary_serializer.hpp"
 #include "caf/broadcast_downstream_manager.hpp"
+#include "caf/deserializer.hpp"
+#include "caf/sec.hpp"
+#include <bits/stdint-uintn.h>
 #include <flatbuffers/flatbuffers.h>
 
 using namespace std::chrono;
@@ -59,43 +65,22 @@ namespace vast::system {
 
 namespace v2 {
 
-caf::actor
-partition_state::fetch_indexer(const data_extractor& dx,
-                               [[maybe_unused]] relational_operator op,
-                               [[maybe_unused]] const data& x) {
-  VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
-  // Sanity check.
-  if (dx.offset.empty())
-    return nullptr;
-  auto& r = caf::get<record_type>(dx.type);
-  auto k = r.resolve(dx.offset);
-  VAST_ASSERT(k);
-  auto index = r.flat_index_at(dx.offset);
-  if (!index) {
-    VAST_DEBUG(self, "got invalid offset for record type", dx.type);
-    return nullptr;
-  }
-  return indexer_at(*index);
-}
-
 namespace {
 
 // The three functions in this namespace take PartitionState as template
 // argument because they are shared between the read-only and active
 // partitions.
-template<typename PartitionState>
+template <typename PartitionState>
 caf::actor indexer_at(const PartitionState& state, size_t position) {
   VAST_ASSERT(position < state.indexers.size());
   auto& [_, indexer] = as_vector(state.indexers)[position];
   return indexer;
 }
 
-template<typename PartitionState>
-caf::actor
-fetch_indexer(const PartitionState& state,
-                               const data_extractor& dx,
-                               [[maybe_unused]] relational_operator op,
-                               [[maybe_unused]] const data& x) {
+template <typename PartitionState>
+caf::actor fetch_indexer(const PartitionState& state, const data_extractor& dx,
+                         [[maybe_unused]] relational_operator op,
+                         [[maybe_unused]] const data& x) {
   VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
   // Sanity check.
   if (dx.offset.empty())
@@ -111,10 +96,10 @@ fetch_indexer(const PartitionState& state,
   return indexer_at(state, *index);
 }
 
-template<typename PartitionState>
+template <typename PartitionState>
 caf::actor
 fetch_indexer(const PartitionState& state, const attribute_extractor& ex,
-                               relational_operator op, const data& x) {
+              relational_operator op, const data& x) {
   VAST_TRACE(VAST_ARG(ex), VAST_ARG(op), VAST_ARG(x));
   if (ex.attr == atom::type_v) {
     // We know the answer immediately: all IDs that are part of the table.
@@ -140,24 +125,33 @@ caf::actor partition_state::indexer_at(size_t position) {
   return vast::system::v2::indexer_at(*this, position);
 }
 
-
 caf::actor readonly_partition_state::indexer_at(size_t position) {
   return vast::system::v2::indexer_at(*this, position);
 }
 
-
-caf::actor partition_state::fetch_indexer(const attribute_extractor& ex,
+caf::actor
+partition_state::fetch_indexer(const attribute_extractor& ex,
                                relational_operator op, const data& x) {
   return vast::system::v2::fetch_indexer(*this, ex, op, x);
 }
 
-
-caf::actor readonly_partition_state::fetch_indexer(const attribute_extractor& ex,
-                               relational_operator op, const data& x) {
+caf::actor
+readonly_partition_state::fetch_indexer(const attribute_extractor& ex,
+                                        relational_operator op, const data& x) {
   return vast::system::v2::fetch_indexer(*this, ex, op, x);
 }
 
+caf::actor
+partition_state::fetch_indexer(const data_extractor& ex, relational_operator op,
+                               const data& x) {
+  return vast::system::v2::fetch_indexer(*this, ex, op, x);
+}
 
+caf::actor
+readonly_partition_state::fetch_indexer(const data_extractor& ex,
+                                        relational_operator op, const data& x) {
+  return vast::system::v2::fetch_indexer(*this, ex, op, x);
+}
 
 bool partition_selector::operator()(const vast::qualified_record_field& filter,
                                     const table_slice_column& x) const {
@@ -168,43 +162,91 @@ bool partition_selector::operator()(const vast::qualified_record_field& filter,
 
 caf::expected<flatbuffers::Offset<fbs::Partition>>
 pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
-  std::vector<flatbuffers::Offset<fbs::ValueIndex>> indices;
+  auto uuid = pack(builder, x.partition_uuid);
+  if (!uuid)
+    return uuid.error();
+  std::vector<flatbuffers::Offset<fbs::QualifiedValueIndex>> indices;
   for (const auto& kv : x.chunks) {
     auto chunk = kv.second;
     // TODO: Can we somehow get rid of this copy?
     auto data = builder.CreateVector(
       reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
-    auto type = builder.CreateString("FIXME");
+    auto type = builder.CreateString("FIXME: dummy_type");
+    auto fqf = builder.CreateString("FIXME: dummy_qualified_fieldname");
     fbs::ValueIndexBuilder vbuilder(builder);
     vbuilder.add_type(type);
     vbuilder.add_data(data);
     auto vindex = vbuilder.Finish();
-    indices.push_back(vindex);
+    fbs::QualifiedValueIndexBuilder qbuilder(builder);
+    qbuilder.add_qualified_field_name(fqf);
+    qbuilder.add_index(vindex);
+    auto qindex = qbuilder.Finish();
+    indices.push_back(qindex);
   }
   auto indexes = builder.CreateVector(indices);
-  auto uuid = pack(builder, x.partition_uuid);
-  if (!uuid)
-    return uuid.error();
+  // Serialize layout.
+  // FIXME: Create a generic function for arbitrary type -> flatbuffers byte
+  // array serialization. Or maybe `caf::serialize()` can already do the job.
+  std::vector<char> buf;
+  caf::binary_serializer bs{
+    nullptr,
+    buf}; // FIXME: do we need to pass the current actor system as first arg?
+  inspect(bs, x.combined_layout);
+  auto layout_chunk = chunk::make(std::move(buf));
+  auto combined_layout = builder.CreateVector(
+    reinterpret_cast<const uint8_t*>(layout_chunk->data()),
+    layout_chunk->size());
+  // auto layouts = ...; // FIXME
   fbs::PartitionBuilder partition_builder(builder);
   partition_builder.add_uuid(*uuid);
   partition_builder.add_offset(x.offset);
   partition_builder.add_events(x.events);
   partition_builder.add_indexes(indexes);
+  partition_builder.add_combined_layout(combined_layout);
   return partition_builder.Finish();
 }
 
-caf::error unpack(const fbs::Partition& partition, readonly_partition_state& state) {
+caf::error
+unpack(const fbs::Partition& partition, readonly_partition_state& state) {
+  // Check that all fields exist.
+  // TODO: We should also add a `Version` fields to the partitions.
   if (!partition.uuid())
-    return make_error(ec::format_error, "missing uuid in partition");
+    return make_error(ec::format_error, "missing 'uuid' field in partition "
+                                        "flatbuffer");
+  auto combined_layout = partition.combined_layout();
+  if (!combined_layout)
+    return make_error(ec::format_error, "missing 'layouts' field in partition "
+                                        "flatbuffer");
+  auto indexes = partition.indexes();
+  if (!indexes)
+    return make_error(ec::format_error, "missing 'indexes' field in partition "
+                                        "flatbuffer");
   unpack(*partition.uuid(), state.partition_uuid);
   state.events = partition.events();
   state.offset = partition.offset();
-  // FIXME: Correctly unpack partition.
-  // for layout in layouts ...
-  // for index in indices ...
+  caf::binary_deserializer bs(
+    state.self->system(),
+    reinterpret_cast<const char*>(combined_layout->data()),
+    combined_layout->size());
+  bs >> state.combined_layout;
+  for (auto qualified_index : *indexes) {
+    // FIXME: Check that all fields exist (ideally in a separate pass before we
+    // start deserializing anything)
+    auto fqf = qualified_index->qualified_field_name();
+    auto index = qualified_index->index();
+    auto type = index->type();
+    auto data = index->data();
+    caf::binary_deserializer bs(state.self->system(),
+                                reinterpret_cast<const char*>(data->data()),
+                                data->size());
+    // FIXME:
+    // switch (type) {
+    // case ValueIndex:
+    //   ...
+    // }
+  }
   return caf::none;
 }
-
 
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->state.self = self;
@@ -396,8 +438,9 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   };
 }
 
-caf::behavior readonly_partition(caf::stateful_actor<readonly_partition_state>* self,
-                                 uuid id, vast::chunk chunk) {
+caf::behavior
+readonly_partition(caf::stateful_actor<readonly_partition_state>* self, uuid id,
+                   vast::chunk chunk) {
   auto partition = fbs::GetPartition(chunk.data());
   auto error = unpack(*partition, self->state);
   VAST_ASSERT(!error); // FIXME: Proper error handling.
