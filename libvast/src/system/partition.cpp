@@ -78,8 +78,42 @@ partition_state::fetch_indexer(const data_extractor& dx,
   return indexer_at(*index);
 }
 
+namespace {
+
+// The three functions in this namespace take PartitionState as template
+// argument because they are shared between the read-only and active
+// partitions.
+template<typename PartitionState>
+caf::actor indexer_at(const PartitionState& state, size_t position) {
+  VAST_ASSERT(position < state.indexers.size());
+  auto& [_, indexer] = as_vector(state.indexers)[position];
+  return indexer;
+}
+
+template<typename PartitionState>
 caf::actor
-partition_state::fetch_indexer(const attribute_extractor& ex,
+fetch_indexer(const PartitionState& state,
+                               const data_extractor& dx,
+                               [[maybe_unused]] relational_operator op,
+                               [[maybe_unused]] const data& x) {
+  VAST_TRACE(VAST_ARG(dx), VAST_ARG(op), VAST_ARG(x));
+  // Sanity check.
+  if (dx.offset.empty())
+    return nullptr;
+  auto& r = caf::get<record_type>(dx.type);
+  auto k = r.resolve(dx.offset);
+  VAST_ASSERT(k);
+  auto index = r.flat_index_at(dx.offset);
+  if (!index) {
+    VAST_DEBUG(state.self, "got invalid offset for record type", dx.type);
+    return nullptr;
+  }
+  return indexer_at(state, *index);
+}
+
+template<typename PartitionState>
+caf::actor
+fetch_indexer(const PartitionState& state, const attribute_extractor& ex,
                                relational_operator op, const data& x) {
   VAST_TRACE(VAST_ARG(ex), VAST_ARG(op), VAST_ARG(x));
   if (ex.attr == atom::type_v) {
@@ -87,24 +121,43 @@ partition_state::fetch_indexer(const attribute_extractor& ex,
     // However, we still have to "lift" this result into an actor for the
     // EVALUATOR.
     ids row_ids;
-    for (auto& [name, ids] : type_ids)
+    for (auto& [name, ids] : state.type_ids)
       if (evaluate(name, op, x))
         row_ids |= ids;
     // TODO: Spawning a one-shot actor is quite expensive. Maybe the
     //       partition could instead maintain this actor lazily.
-    return self->spawn([row_ids]() -> caf::behavior {
+    return state.self->spawn([row_ids]() -> caf::behavior {
       return [=](const curried_predicate&) { return row_ids; };
     });
   }
-  VAST_WARNING(self, "got unsupported attribute:", ex.attr);
+  VAST_WARNING(state.self, "got unsupported attribute:", ex.attr);
   return nullptr;
 }
 
+} // namespace
+
 caf::actor partition_state::indexer_at(size_t position) {
-  VAST_ASSERT(position < indexers.size());
-  auto& [_, indexer] = as_vector(indexers)[position];
-  return indexer;
+  return vast::system::v2::indexer_at(*this, position);
 }
+
+
+caf::actor readonly_partition_state::indexer_at(size_t position) {
+  return vast::system::v2::indexer_at(*this, position);
+}
+
+
+caf::actor partition_state::fetch_indexer(const attribute_extractor& ex,
+                               relational_operator op, const data& x) {
+  return vast::system::v2::fetch_indexer(*this, ex, op, x);
+}
+
+
+caf::actor readonly_partition_state::fetch_indexer(const attribute_extractor& ex,
+                               relational_operator op, const data& x) {
+  return vast::system::v2::fetch_indexer(*this, ex, op, x);
+}
+
+
 
 bool partition_selector::operator()(const vast::qualified_record_field& filter,
                                     const table_slice_column& x) const {
@@ -112,6 +165,46 @@ bool partition_selector::operator()(const vast::qualified_record_field& filter,
   vast::qualified_record_field fqf{layout.name(), layout.fields.at(x.column)};
   return filter == fqf;
 }
+
+caf::expected<flatbuffers::Offset<fbs::Partition>>
+pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x) {
+  std::vector<flatbuffers::Offset<fbs::ValueIndex>> indices;
+  for (const auto& kv : x.chunks) {
+    auto chunk = kv.second;
+    // TODO: Can we somehow get rid of this copy?
+    auto data = builder.CreateVector(
+      reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
+    auto type = builder.CreateString("FIXME");
+    fbs::ValueIndexBuilder vbuilder(builder);
+    vbuilder.add_type(type);
+    vbuilder.add_data(data);
+    auto vindex = vbuilder.Finish();
+    indices.push_back(vindex);
+  }
+  auto indexes = builder.CreateVector(indices);
+  auto uuid = pack(builder, x.partition_uuid);
+  if (!uuid)
+    return uuid.error();
+  fbs::PartitionBuilder partition_builder(builder);
+  partition_builder.add_uuid(*uuid);
+  partition_builder.add_offset(x.offset);
+  partition_builder.add_events(x.events);
+  partition_builder.add_indexes(indexes);
+  return partition_builder.Finish();
+}
+
+caf::error unpack(const fbs::Partition& partition, readonly_partition_state& state) {
+  if (!partition.uuid())
+    return make_error(ec::format_error, "missing uuid in partition");
+  unpack(*partition.uuid(), state.partition_uuid);
+  state.events = partition.events();
+  state.offset = partition.offset();
+  // FIXME: Correctly unpack partition.
+  // for layout in layouts ...
+  // for index in indices ...
+  return caf::none;
+}
+
 
 caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   self->state.self = self;
@@ -239,34 +332,12 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
       if (self->state.persisted_indexers < self->state.indexers.size())
         return;
       flatbuffers::FlatBufferBuilder builder;
-      std::vector<flatbuffers::Offset<fbs::ValueIndex>> indices;
-      for (const auto& kv : self->state.chunks) {
-        auto chunk = kv.second;
-        // TODO: Can we somehow get rid of this copy?
-        auto data = builder.CreateVector(
-          reinterpret_cast<const uint8_t*>(chunk->data()), chunk->size());
-        auto type = builder.CreateString("FIXME");
-        fbs::ValueIndexBuilder vbuilder(builder);
-        vbuilder.add_type(type);
-        vbuilder.add_data(data);
-        auto vindex = vbuilder.Finish();
-        indices.push_back(vindex);
+      auto partition = pack(builder, self->state);
+      if (!partition) {
+        VAST_ERROR(self, "error serializing partition", self->state.name);
+        return;
       }
-      auto indexes = builder.CreateVector(indices);
-      auto uuid = pack(builder, self->state.partition_uuid);
-      if (!uuid) {
-        VAST_ERROR(self,
-                   "encountered error with flatpack serialization of uuid",
-                   self->state.partition_uuid, uuid.error());
-        return; // FIXME: send error message
-      }
-      fbs::PartitionBuilder partition_builder(builder);
-      partition_builder.add_uuid(*uuid);
-      partition_builder.add_offset(self->state.offset);
-      partition_builder.add_events(self->state.events);
-      partition_builder.add_indexes(indexes);
-      auto partition = partition_builder.Finish();
-      builder.Finish(partition);
+      builder.Finish(*partition);
       // Delegate I/O to filesystem actor.
       // TODO: Store the actor handle in `state`.
       auto actor = self->system().registry().get(atom::filesystem_v);
@@ -325,24 +396,12 @@ caf::behavior partition(caf::stateful_actor<partition_state>* self, uuid id) {
   };
 }
 
-// TODO: Eventually we want to get rid of `partition_state` for read-only
-// partitions (or introduce a severely reduced readonly_partition_state) and
-// answer queries directly from the stored flatbuffer, without deserialization
-// step.
-caf::behavior readonly_partition(caf::stateful_actor<partition_state>* self,
+caf::behavior readonly_partition(caf::stateful_actor<readonly_partition_state>* self,
                                  uuid id, vast::chunk chunk) {
   auto partition = fbs::GetPartition(chunk.data());
-  // FIXME: remove the use of asserts in this function and replace by error
-  // handling (since the chunk is loaded from disk and must be considered to
-  // be user input)
-  VAST_ASSERT(partition->uuid());
-  unpack(*partition->uuid(), self->state.partition_uuid);
+  auto error = unpack(*partition, self->state);
+  VAST_ASSERT(!error); // FIXME: Proper error handling.
   VAST_ASSERT(id == self->state.partition_uuid);
-  self->state.events = partition->events();
-  self->state.offset = partition->offset();
-  // FIXME: Correctly unpack partition.
-  // for layout in layouts ...
-  // for index in indices ...
   return {
     [=](caf::stream<table_slice_ptr>) {
       VAST_ASSERT(!"read-only partition can not receive new table slices");

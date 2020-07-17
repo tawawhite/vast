@@ -107,6 +107,56 @@ struct partition_state {
   std::map<caf::actor_id, vast::chunk_ptr> chunks;
 };
 
+// TODO: Split this into a `static data` part that can be mmap'ed
+// straight from disk, and an actor-related part. In the ideal case,
+// we want to eventually be able to use the on-disk state without
+// any intermediate deserialzation step, like yandex::mms or cap'n proto.
+struct readonly_partition_state {
+  // FIXME: Move these functions, together with `combined_layout` and  
+  caf::actor indexer_at(size_t position);
+
+  caf::actor fetch_indexer(const data_extractor& dx, relational_operator op,
+                           const data& x);
+
+  caf::actor fetch_indexer(const attribute_extractor& ex,
+                           relational_operator op, const data& x);
+
+  /// Pointer to the parent actor.
+  caf::stateful_actor<partition_state>* self;
+
+  /// Uniquely identifies this partition.
+  uuid partition_uuid;
+
+  /// The combined type of all columns of this partition
+  record_type combined_layout;
+
+  /// Maps type names to ids. Used the answer #type queries.
+  std::unordered_map<std::string, ids> type_ids;
+
+  /// A readable name for this partition
+  std::string name;
+
+  /// The first ID in the partition.
+  size_t offset;
+
+  /// The number of events in the partition.
+  size_t events;
+
+  // Stores the deserialized indexers.
+  std::map<qualified_record_field, value_index> indexer_states;
+
+  /// Maps qualified fields to indexer actors.
+  detail::stable_map<qualified_record_field, caf::actor> indexers;
+};
+
+// flatbuffer support
+
+caf::expected<flatbuffers::Offset<fbs::Partition>>
+pack(flatbuffers::FlatBufferBuilder& builder, const partition_state& x);
+
+caf::error unpack(const fbs::Partition& x, readonly_partition_state& y);
+
+
 // TODO: Use typed actors for the partition actors.
 
 /// Spawns a partition.
